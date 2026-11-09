@@ -34,6 +34,8 @@ final class Settings: ObservableObject {
     @Published var breaksEnabled: Bool { didSet { d.set(breaksEnabled, forKey: "breaksEnabled") } }
     @Published var shortBreak: Int { didSet { d.set(shortBreak, forKey: "shortBreak") } }
     @Published var longBreak: Int { didSet { d.set(longBreak, forKey: "longBreak") } }
+    /// Pomodoro rounds per run: focus and a short break, repeated, ending after the last focus.
+    @Published var rounds: Int { didSet { d.set(rounds, forKey: "rounds") } }
     @Published var autoSound: Bool { didSet { d.set(autoSound, forKey: "autoSound") } }
     @Published var thingsLogging: Bool { didSet { d.set(thingsLogging, forKey: "thingsLogging") } }
     @Published var colorIcon: Bool { didSet { d.set(colorIcon, forKey: "colorIcon") } }
@@ -58,7 +60,7 @@ final class Settings: ObservableObject {
         d.register(defaults: [
             "islandEnabled": false, "tidePrompt": true, "editorNudge": true, "hotkeyEnabled": true,
             "hotkey": "ctrl-opt-f", "durations": [25, 40, 50], "defaultMinutes": 25, "breaksEnabled": false,
-            "shortBreak": 5, "longBreak": 15, "autoSound": true, "thingsLogging": true, "colorIcon": true,
+            "shortBreak": 5, "longBreak": 15, "rounds": 1, "autoSound": true, "thingsLogging": true, "colorIcon": true,
             "menuBarTime": true, "chimeEnabled": true, "scene": "auto", "appTracking": true,
         ])
         islandEnabled = d.bool(forKey: "islandEnabled")
@@ -71,6 +73,7 @@ final class Settings: ObservableObject {
         breaksEnabled = d.bool(forKey: "breaksEnabled")
         shortBreak = d.integer(forKey: "shortBreak")
         longBreak = d.integer(forKey: "longBreak")
+        rounds = max(1, min(8, d.integer(forKey: "rounds")))
         autoSound = d.bool(forKey: "autoSound")
         thingsLogging = d.bool(forKey: "thingsLogging")
         colorIcon = d.bool(forKey: "colorIcon")

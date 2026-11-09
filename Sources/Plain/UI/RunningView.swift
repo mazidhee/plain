@@ -72,9 +72,13 @@ struct RunningScreen: View {
     }
 
     private var kicker: String {
-        if onBreak { return "Break · \(model.breakMinutes) min" }
+        if onBreak {
+            if let p = model.plan, p.hasNextRound { return "Break · \(model.breakMinutes) min · round \(p.round + 1) of \(p.rounds) next" }
+            return "Break · \(model.breakMinutes) min"
+        }
         guard let plan = model.plan else { return "" }
         var parts = [plan.category.label]
+        if plan.rounds > 1 { parts.append("Round \(plan.round) of \(plan.rounds)") }
         if plan.lockIn && plan.taskID == nil { parts.append("Lock in") }
         if let t = model.trackedIncludingNow, t > 0 { parts.append("\(Duration.short(t)) on this to-do") }
         return parts.joined(separator: " · ")
@@ -85,11 +89,23 @@ struct RunningScreen: View {
             PixelRing(fraction: 1 - model.progress, lit: model.isPaused ? Theme.muted : accent)
             VStack(spacing: Space.s) {
                 PixelClock(text: model.clockText, pixel: 6, ink: model.isPaused ? Theme.pausedInk : Theme.textInk)
-                Text(model.isPaused ? "Paused" : "Ends \(Date().addingTimeInterval(model.remaining).formatted(date: .omitted, time: .shortened))")
+                Text(model.isPaused ? "Paused" : endsText)
                     .font(TypeScale.meta).foregroundStyle(model.isPaused ? accent : Theme.muted)
             }
         }
         .frame(width: 312, height: 120)
+    }
+
+    private var endsText: String {
+        let t = { (d: Date) in d.formatted(date: .omitted, time: .shortened) }
+        let ends = Date().addingTimeInterval(model.remaining)
+        guard let p = model.plan, p.rounds > 1 else { return "Ends \(t(ends))" }
+        // The rest of the run: what's left now, then each remaining break and round.
+        let left = p.rounds - p.round
+        let more = onBreak ? Double((p.roundLength ?? p.minutes) * (left) + model.settings.shortBreak * max(0, left - 1))
+                           : Double(((p.roundLength ?? p.minutes) + model.settings.shortBreak) * left)
+        let runEnd = ends.addingTimeInterval(more * model.machine.secondsPerMinute)
+        return left > 0 ? "Ends \(t(ends)) · run ends \(t(runEnd))" : "Ends \(t(ends)) · last round"
     }
 
     /// Count-up looks different on purpose: no frame to drain, a track that grows a cell a minute.
@@ -121,7 +137,10 @@ struct RunningScreen: View {
 
     private var controls: some View {
         HStack(alignment: .top, spacing: Space.m) {
-            if onBreak {
+            if onBreak, let p = model.plan, p.hasNextRound {
+                PrimaryButton(label: "Start round \(p.round + 1)", symbol: "forward.fill", accent: accent, width: 180) { model.skipBreak() }
+                GhostControl(symbol: "stop.fill", caption: "End run", tooltip: "Stop here; the rounds so far are saved.") { model.endRun() }
+            } else if onBreak {
                 PrimaryButton(label: "Skip break", symbol: "forward.fill", accent: accent, width: 160) { model.cancel() }
             } else if model.isTracker {
                 PrimaryButton(label: model.isPaused ? "Resume" : "Pause", symbol: model.isPaused ? "play.fill" : "pause.fill", accent: accent, width: 140) { model.togglePause() }
@@ -217,6 +236,7 @@ struct SummaryScreen: View {
     private func headline(_ s: CompletedSession?) -> String {
         guard let s else { return "Done." }
         if s.openEnded == true { return "Tracked." }
+        if let n = s.rounds, !s.endedEarly, s.round == n { return "All \(n) rounds done." }
         return s.endedEarly ? "Wrapped up early." : "Nice work."
     }
 }

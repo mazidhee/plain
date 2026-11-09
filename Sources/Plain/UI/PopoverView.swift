@@ -55,27 +55,102 @@ struct StatsPane: View {
     }
 }
 
-/// Study time Tide logged itself (read from Tide, never written).
+/// Tide's study time: headline numbers, the last two weeks and what kind of studying it was.
+/// From Tide's study data API when a token is set (Settings), else its log file. Never written.
 struct TideCard: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "water.waves").font(.system(size: 16, weight: .semibold)).foregroundStyle(Theme.study)
-            VStack(alignment: .leading, spacing: 2) {
-                if model.tide.available {
-                    Text("Studied in Tide today: \(Duration.short(model.tide.todayMinutes))").font(Theme.rounded(13, .semibold)).foregroundStyle(Theme.text)
-                    Text("This week \(Duration.short(model.tide.weekMinutes))\(model.tide.lastLabel.map { " · last: \($0)" } ?? "")")
-                        .font(Theme.rounded(11)).foregroundStyle(Theme.muted).lineLimit(1)
-                } else {
-                    Text("Tide study time").font(Theme.rounded(13, .semibold)).foregroundStyle(Theme.text)
-                    Text(model.tide.problem ?? "Not found.").font(Theme.rounded(11)).foregroundStyle(Theme.faint)
+        VStack(alignment: .leading, spacing: Space.m) {
+            HStack(spacing: Space.s) {
+                Image(systemName: "water.waves").font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.study)
+                Text("Tide").font(Theme.rounded(13, .semibold)).foregroundStyle(Theme.text)
+                Text(model.tide.fromAPI ? "live" : "log file").font(Theme.rounded(9, .bold)).foregroundStyle(Theme.faint)
+                    .padding(.horizontal, 5).padding(.vertical, 1).background(Capsule().fill(Theme.line))
+                    .help(model.tide.fromAPI ? "From Tide's study data API" : "From Tide's log file. Add the API token in Settings for the full picture.")
+                Spacer()
+                Button { model.onOpenDashboard?() } label: {
+                    Label("Dashboard", systemImage: "rectangle.3.group").font(Theme.rounded(11, .semibold)).foregroundStyle(Theme.accent)
                 }
+                .buttonStyle(PressableStyle())
+                .help("Every number, chart and session in a window")
             }
-            Spacer()
+            if model.tide.available {
+                HStack(spacing: Space.l) {
+                    number("Today", Duration.short(model.tide.todayMinutes))
+                    number("Week", Duration.short(model.tide.weekMinutes))
+                    if let streak = model.tide.streak { number("Streak", "\(streak)d") }
+                    if let s = model.tideSummary { number("30 days", Duration.short(s.totals.inRange)) }
+                }
+                if let now = model.tide.studyingNow {
+                    Label("Studying now: \(now)", systemImage: "dot.radiowaves.left.and.right").font(TypeScale.meta).foregroundStyle(Theme.study).lineLimit(1)
+                } else if let last = model.tide.lastLabel {
+                    Text("Last: \(last)").font(TypeScale.meta).foregroundStyle(Theme.muted).lineLimit(1)
+                }
+                if let s = model.tideSummary {
+                    fortnight(s.days.suffix(14))
+                    kinds(s.activities)
+                }
+            } else {
+                Text(model.tide.problem ?? "Not found.").font(Theme.rounded(11)).foregroundStyle(Theme.faint)
+            }
+            if let why = model.tideAPIProblem {
+                Text(why).font(Theme.rounded(10)).foregroundStyle(Theme.faint).fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(10)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Theme.study.opacity(0.14)))
+        .background(RoundedRectangle(cornerRadius: 10).fill(Theme.study.opacity(0.10)))
+    }
+
+    private func number(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(title.uppercased()).font(Theme.rounded(9, .bold)).foregroundStyle(Theme.faint).kerning(0.5)
+            Text(value).font(Theme.rounded(15, .bold)).foregroundStyle(Theme.text).monospacedDigit()
+        }
+    }
+
+    /// The last 14 days as thin bars, today brightest.
+    private func fortnight(_ days: ArraySlice<TideAPI.Summary.Day>) -> some View {
+        let peak = max(30, days.map(\.minutes).max() ?? 0)
+        let list = Array(days)
+        return HStack(alignment: .bottom, spacing: 3) {
+            ForEach(list.indices, id: \.self) { i in
+                let d = list[i]
+                RoundedRectangle(cornerRadius: 1.5)
+                    .fill(d.minutes == 0 ? Theme.line : (i == list.count - 1 ? Theme.study : Theme.study.opacity(0.6)))
+                    .frame(height: d.minutes == 0 ? 2 : max(3, 34 * CGFloat(d.minutes) / CGFloat(peak)))
+                    .frame(maxWidth: .infinity)
+                    .help("\(TideAPI.date(d.date)?.formatted(.dateTime.weekday(.abbreviated).day()) ?? d.date): \(Duration.short(d.minutes))\(d.cards > 0 ? " · \(d.cards) cards" : "")")
+            }
+        }
+        .frame(height: 34, alignment: .bottom)
+    }
+
+    /// One bar split by kind of study, labelled underneath.
+    private func kinds(_ rows: [TideAPI.Summary.ActivityRow]) -> some View {
+        let shown = rows.filter { $0.minutes > 0 }.sorted { $0.minutes > $1.minutes }
+        let total = max(1, shown.reduce(0) { $0 + $1.minutes })
+        return VStack(alignment: .leading, spacing: 5) {
+            if !shown.isEmpty {
+                GeometryReader { g in
+                    HStack(spacing: 2) {
+                        ForEach(shown) { r in
+                            RoundedRectangle(cornerRadius: 2).fill(ChartColor.activity(r.activity))
+                                .frame(width: max(3, (g.size.width - CGFloat(shown.count * 2)) * CGFloat(r.minutes) / CGFloat(total)))
+                        }
+                    }
+                }
+                .frame(height: 6)
+                FlowRow(spacing: 8) {
+                    ForEach(shown) { r in
+                        HStack(spacing: 4) {
+                            RoundedRectangle(cornerRadius: 1.5).fill(ChartColor.activity(r.activity)).frame(width: 7, height: 7)
+                            Text("\(TideAPI.label(r.activity)) \(Duration.short(r.minutes))").font(Theme.rounded(10)).foregroundStyle(Theme.muted)
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

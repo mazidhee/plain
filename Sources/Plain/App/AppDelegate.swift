@@ -2,13 +2,15 @@ import AppKit
 import Combine
 import SwiftUI
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSWindowDelegate {
     let model = AppModel.shared
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
     private var island: IslandController?
     private var quickStart: QuickStartPanel?
     private var settingsWindow: NSWindow?
+    private var dashboardWindow: NSWindow?
+    private lazy var dashboardData = DashboardData(model: model)
     private var hotKey: HotKey?
     private let watcher = AppWatcher()
     private var cancellables = Set<AnyCancellable>()
@@ -71,6 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         watcher.start()
 
         // A session started from Things (plain://) or a time block drops the popover down for a moment.
+        model.onOpenDashboard = { [weak self] in self?.openDashboard() }
         model.onExternalStart = { [weak self] in
             guard let self else { return }
             guard !self.popover.isShown else { return }
@@ -195,6 +198,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    /// The dashboard: a full window with a Dock icon while it's open; Plain goes back to being
+    /// menu-bar-only when it closes.
+    func openDashboard() {
+        popover.performClose(nil)
+        if dashboardWindow == nil {
+            let host = NSHostingController(rootView: DashboardView(model: model, data: dashboardData))
+            let w = NSWindow(contentViewController: host)
+            w.title = "Plain Dashboard"
+            w.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+            w.titlebarAppearsTransparent = true
+            w.appearance = NSAppearance(named: .darkAqua)
+            w.backgroundColor = NSColor(red: 0x1C / 255, green: 0x16 / 255, blue: 0x13 / 255, alpha: 1)
+            w.isReleasedWhenClosed = false
+            w.minSize = NSSize(width: 980, height: 640)
+            w.setContentSize(NSSize(width: 1180, height: 860))
+            w.setFrameAutosaveName("PlainDashboard")
+            w.delegate = self
+            w.center()
+            dashboardWindow = w
+        }
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        dashboardWindow?.makeKeyAndOrderFront(nil)
+        dashboardData.load()
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard (notification.object as? NSWindow) === dashboardWindow else { return }
+        NSApp.setActivationPolicy(.accessory)
     }
 
     @objc func handleURL(_ event: NSAppleEventDescriptor, reply: NSAppleEventDescriptor) {

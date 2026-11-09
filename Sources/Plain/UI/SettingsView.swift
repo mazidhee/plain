@@ -5,6 +5,7 @@ struct SettingsView: View {
     @ObservedObject var model: AppModel
     @StateObject private var durationsTextBox = Box("")
     private var durationsText: String { get { durationsTextBox.value } nonmutating set { durationsTextBox.value = newValue } }
+    @StateObject private var tokenBox = Box("")
 
     var body: some View {
         Form {
@@ -22,7 +23,9 @@ struct SettingsView: View {
                 TextField("Duration presets (minutes)", text: $durationsTextBox.value)
                     .onSubmit(saveDurations)
                 Stepper("Default length: \(settings.defaultMinutes) min", value: $settings.defaultMinutes, in: 5...180, step: 5)
-                Toggle("Pomodoro breaks", isOn: $settings.breaksEnabled)
+                Stepper("Pomodoro rounds: \(settings.rounds == 1 ? "off (one block)" : "\(settings.rounds) rounds")", value: $settings.rounds, in: 1...8)
+                Text("With rounds, each block is followed by a short break and the next one starts by itself, until the last round ends.").font(.caption).foregroundStyle(.secondary)
+                Toggle("Break after single sessions too", isOn: $settings.breaksEnabled)
                 Stepper("Short break: \(settings.shortBreak) min", value: $settings.shortBreak, in: 1...30)
                 Stepper("Long break (every 4th): \(settings.longBreak) min", value: $settings.longBreak, in: 5...60)
                 Toggle("Soft chime at the end", isOn: $settings.chimeEnabled)
@@ -49,9 +52,15 @@ struct SettingsView: View {
             Section("Tide and app time") {
                 Toggle("Record time per app in front (local only)", isOn: $settings.appTracking)
                 Text("Away time isn't counted: five quiet minutes or sleep stop the clock. Nothing goes to Things.").font(.caption).foregroundStyle(.secondary)
-                Text(model.tide.available
-                     ? "Reading Tide's study log (read-only): \(TideLog.logURL?.path ?? "")"
-                     : "Tide study log: \(model.tide.problem ?? "not found")").font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    SecureField("Tide study data API token", text: $tokenBox.value, prompt: Text(model.tideToken == nil ? "Paste the token" : "Saved in the Keychain"))
+                        .onSubmit { model.setTideToken(tokenBox.value); tokenBox.value = "" }
+                    Button("Save") { model.setTideToken(tokenBox.value); tokenBox.value = "" }.disabled(tokenBox.value.isEmpty)
+                    if model.tideToken != nil { Button("Forget") { model.setTideToken("") } }
+                }
+                Text("In Tide: Settings › Tools › Study data API › Share my study data, then copy the token. Plain reads \(TideAPI.baseURL.absoluteString) (read-only).").font(.caption).foregroundStyle(.secondary)
+                Text(tideStatus).font(.caption).foregroundStyle(model.tideAPIProblem == nil ? Color.secondary : Color.orange)
+                Button("Open the dashboard") { model.onOpenDashboard?() }
             }
             Section("Scene") {
                 Picker("Background", selection: $settings.scene) {
@@ -67,13 +76,21 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 460, height: 640)
+        .frame(width: 480, height: 680)
         .onAppear {
             durationsText = settings.durations.map(String.init).joined(separator: ", ")
             settings.refreshLoginStatus()
             model.refreshAreaTasks()
         }
         .onDisappear(perform: saveDurations)
+    }
+
+    private var tideStatus: String {
+        if model.tide.fromAPI { return "Connected to Tide: today \(Duration.short(model.tide.todayMinutes)), this week \(Duration.short(model.tide.weekMinutes))." }
+        if let why = model.tideAPIProblem { return "\(why) Using Tide's log file meanwhile." }
+        return model.tide.available
+            ? "No token yet, so Plain reads Tide's log file (today and this week only): \(TideLog.logURL?.path ?? "")"
+            : "Tide study log: \(model.tide.problem ?? "not found")"
     }
 
     private var thingsText: String {

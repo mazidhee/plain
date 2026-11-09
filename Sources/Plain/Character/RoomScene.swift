@@ -90,6 +90,8 @@ enum RoomScene {
         }
         p["Á"] = sky.0; p["É"] = sky.0.mixed(sky.1, 0.25); p["Í"] = sky.0.mixed(sky.1, 0.5); p["Ó"] = sky.0.mixed(sky.1, 0.75); p["Ú"] = sky.1
         p["☼"] = period == .night || period == .dusk ? RGBA(0xf4f1dc) : RGBA(0xfff0b0)   // sun or moon
+        p["☀"] = period == .golden || period == .dawn || period == .dusk ? RGBA(0xffb066) : RGBA(0xfff0b0) // sun
+        p["◐"] = sky.0.mixed(RGBA(0x8a90b0), 0.22)           // the moon's dark side
         p["·"] = RGBA(0xfafaff, alpha: 0.9)                    // stars
         p["≈"] = RGBA(0xffffff, alpha: period == .night ? 0 : 0.8) // clouds
         // Code den, library and beach.
@@ -108,9 +110,10 @@ enum RoomScene {
         return p
     }
 
-    /// The whole scene for one tick.
-    static func frame(activity: Activity, tick: Int, period: DayPeriod, musicPlaying: Bool, scene: SceneKind = .room) -> PixelGrid {
-        if scene == .beach { return beach(activity: activity, tick: tick, period: period, musicPlaying: musicPlaying) }
+    /// The whole scene for one tick. `sky` places the sun and moon (nil: the period's usual spots).
+    static func frame(activity: Activity, tick: Int, period: DayPeriod, musicPlaying: Bool, scene: SceneKind = .room, sky: Sky? = nil) -> PixelGrid {
+        let sky = sky ?? Sky.typical(period)
+        if scene == .beach { return beach(activity: activity, tick: tick, sky: sky, musicPlaying: musicPlaying) }
         var g = PixelGrid(width: width, height: height, fill: "1")
         // Wall stripes and wainscot.
         for x in stride(from: 3, to: width, by: 12) { g.fill(x, 0, 1, 34, "2") }
@@ -121,7 +124,7 @@ enum RoomScene {
             for x in stride(from: (i * 7) % 16, to: width, by: 16) { g.set(x, y + 1, "5"); g.set(x, y + 2, "5") }
         }
 
-        drawWindow(&g, period: period, tick: tick)
+        drawWindow(&g, sky: sky, tick: tick)
         drawFairyLights(&g, tick: tick, period: period)
         if scene == .library {
             drawLibraryShelves(&g)
@@ -230,19 +233,23 @@ enum RoomScene {
 
     // MARK: Beach
 
-    static func beach(activity: Activity, tick: Int, period: DayPeriod, musicPlaying: Bool) -> PixelGrid {
+    static func beach(activity: Activity, tick: Int, sky: Sky, musicPlaying: Bool) -> PixelGrid {
+        let period = sky.period
         var g = PixelGrid(width: width, height: height, fill: "σ")
         let bands: [Character] = ["Á", "É", "Í", "Ó", "Ú"]
         for y in 0..<23 { g.fill(0, y, width, 1, bands[min(4, y * 5 / 23)]) }
         let night = period == .night || period == .dusk
+        let skyRect = (x: 0, y: 0, w: width, h: 23)
+        let moonX = sky.moon.map { 4 + Int(($0.x * Double(width - 8)).rounded()) }
+        let sunX = sky.sun.map { 4 + Int(($0.x * Double(width - 8)).rounded()) }
         if night {
-            g.fill(70, 4, 5, 5, "☼"); g.fill(69, 5, 2, 3, bands[0])
             for (i, s) in [(8, 3), (20, 7), (33, 2), (47, 9), (58, 4), (86, 8), (26, 13)].enumerated() where (tick / 3 + i) % 5 != 0 {
                 g.set(s.0, s.1, "·")
             }
-        } else {
-            let sunY = period == .golden || period == .dawn ? 15 : 4
-            g.fill(68, sunY, 6, 6, "☼"); g.fill(67, sunY + 1, 8, 4, "☼")
+        }
+        if let m = sky.moon, let mx = moonX { drawMoon(&g, cx: mx, cy: 21 - Int((m.alt * 17).rounded()), phase: sky.moonPhase, clip: skyRect) }
+        if let s = sky.sun, let sx = sunX { drawSun(&g, cx: sx, cy: 21 - Int((s.alt * 17).rounded()), big: true, clip: skyRect) }
+        if !night {
             let drift = (tick / 5) % 120
             for (dx, dy, len) in [(0, 6, 9), (3, 5, 4), (40, 10, 7), (43, 9, 3)] {
                 for i in 0..<len { g.set((drift + dx + i) % 120 - 12, dy, "≈") }
@@ -258,8 +265,9 @@ enum RoomScene {
             let shift = (tick + row * 3) % 12
             for x in stride(from: -12 + shift + row * 5, to: width, by: 12) { g.fill(x, y, 3 + row, 1, "π") }
         }
-        if night || period == .golden {
-            for y in stride(from: 24, to: 33, by: 2) { g.fill(68 + (y + tick) % 3, y, 4, 1, night ? "ρ" : "☼") }
+        // A path on the water under a low sun or the moon.
+        if let x = period == .golden || period == .dawn ? sunX : (night ? moonX : nil) {
+            for y in stride(from: 24, to: 33, by: 2) { g.fill(x - 2 + (y + tick) % 3, y, 4, 1, night ? "ρ" : "☀") }
         }
         let foam = (tick / 2) % 4
         for x in 0..<width { g.set(x, 33 + ((x / 5 + foam) % 3 == 0 ? 1 : 0), "ρ") }
@@ -323,24 +331,25 @@ enum RoomScene {
         }
     }
 
-    private static func drawWindow(_ g: inout PixelGrid, period: DayPeriod, tick: Int) {
+    private static func drawWindow(_ g: inout PixelGrid, sky: Sky, tick: Int) {
+        let period = sky.period
         let x = 6, y = 5, w = 24, h = 22
         g.fill(x - 1, y - 1, w + 2, h + 2, "9")
         let bands: [Character] = ["Á", "É", "Í", "Ó", "Ú"]
         for row in 0..<h { g.fill(x, y + row, w, 1, bands[min(4, row * 5 / h)]) }
-        switch period {
-        case .night, .dusk:
-            // Moon and a few twinkling stars.
-            g.fill(x + 16, y + 3, 4, 4, "☼"); g.set(x + 16, y + 3, bands[0]); g.set(x + 19, y + 6, bands[0])
-            g.fill(x + 15, y + 4, 2, 2, bands[0])
+        let clip = (x: x, y: y, w: w, h: h)
+        // Spots map across the glass, morning on the left; the horizon sits just above the rooftops.
+        let horizon = y + h - 4
+        func place(_ s: Sky.Spot) -> (Int, Int) { (x + 2 + Int((s.x * Double(w - 4)).rounded()), horizon - Int((s.alt * Double(horizon - y - 4)).rounded())) }
+        if period == .night || period == .dusk {
             let stars = [(2, 2), (7, 5), (11, 1), (4, 10), (21, 11), (13, 8), (9, 14)]
             for (i, s) in stars.enumerated() where period == .night || i % 2 == 0 {
                 if (tick / 3 + i) % 5 != 0 { g.set(x + s.0, y + s.1, "·") }
             }
-        case .dawn, .golden:
-            g.fill(x + 3, y + h - 6, 5, 3, "☼"); g.fill(x + 4, y + h - 7, 3, 1, "☼")
-        case .morning, .day:
-            g.fill(x + 17, y + 2, 4, 4, "☼"); g.fill(x + 16, y + 3, 6, 2, "☼")
+        }
+        if let m = sky.moon { let (cx, cy) = place(m); drawMoon(&g, cx: cx, cy: cy, phase: sky.moonPhase, clip: clip) }
+        if let s = sky.sun { let (cx, cy) = place(s); drawSun(&g, cx: cx, cy: cy, big: false, clip: clip) }
+        if period == .morning || period == .day {
             // Clouds drift slowly.
             let drift = (tick / 6) % (w + 8)
             let cx = x + (drift % (w + 8)) - 6
@@ -358,6 +367,34 @@ enum RoomScene {
         g.fill(x + w / 2 - 1, y, 2, h, "9")
         g.fill(x, y + h / 2 - 1, w, 1, "9")
         g.fill(x - 2, y + h + 1, w + 4, 2, "3")
+    }
+
+    private static func put(_ g: inout PixelGrid, _ px: Int, _ py: Int, _ c: Character, clip: (x: Int, y: Int, w: Int, h: Int)) {
+        guard px >= clip.x, px < clip.x + clip.w, py >= clip.y, py < clip.y + clip.h else { return }
+        g.set(px, py, c)
+    }
+
+    /// A round pixel sun centred on (cx, cy).
+    private static func drawSun(_ g: inout PixelGrid, cx: Int, cy: Int, big: Bool, clip: (x: Int, y: Int, w: Int, h: Int)) {
+        let r = big ? 3.6 : 2.6
+        let n = Int(r.rounded(.up))
+        for dy in -n...n { for dx in -n...n where Double(dx * dx + dy * dy) <= r * r { put(&g, cx + dx, cy + dy, "☀", clip: clip) } }
+    }
+
+    /// The moon with its real phase: lit from the right while waxing, from the left while waning.
+    static func drawMoon(_ g: inout PixelGrid, cx: Int, cy: Int, phase: Double, clip: (x: Int, y: Int, w: Int, h: Int)) {
+        let lit = Solar.illumination(phase)
+        let waxing = phase < 0.5
+        let r = 3.0
+        for py in 0..<6 {
+            for px in 0..<6 {
+                let dx = Double(px) - 2.5, dy = Double(py) - 2.5
+                guard dx * dx + dy * dy <= r * r + 0.3 else { continue }
+                let half = max(0.5, (r * r - dy * dy).squareRoot())
+                let u = (waxing ? dx : -dx) / half
+                put(&g, cx - 3 + px, cy - 3 + py, u >= 1 - 2 * lit ? "☼" : "◐", clip: clip)
+            }
+        }
     }
 
     private static func drawFairyLights(_ g: inout PixelGrid, tick: Int, period: DayPeriod) {

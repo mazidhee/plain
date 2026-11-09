@@ -56,6 +56,14 @@ struct SessionPlan: Codable, Equatable {
     var tiedToTide = false
     /// "Lock in": focus with no to-do and no title. Stays in Plain unless a to-do is attached.
     var lockIn = false
+    /// Pomodoro rounds: focus, break, focus… `rounds` blocks in all; this is block `round`.
+    var rounds = 1
+    var round = 1
+    /// Each round's length, so +5 on one round doesn't stretch the next.
+    var roundLength: Int? = nil
+
+    /// More rounds still to come after this one.
+    var hasNextRound: Bool { round < rounds }
 
     var displayTitle: String {
         let t = title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -83,6 +91,9 @@ struct CompletedSession: Codable, Identifiable, Equatable {
     var localOnly: Bool? = nil
     /// Started as "Lock in" (no to-do picked at the start).
     var lockIn: Bool? = nil
+    /// Which pomodoro round this was, when part of a run of rounds.
+    var round: Int? = nil
+    var rounds: Int? = nil
 
     /// "Work · Lock in" or the title.
     var label: String { lockIn == true && taskID == nil ? "\(category.label) · Lock in" : title }
@@ -95,6 +106,8 @@ struct SessionMachine {
     enum Event: Equatable {
         case focusEnded(CompletedSession)
         case breakEnded
+        /// A break between rounds ran out and the next round began.
+        case nextRound(Int)
     }
 
     private(set) var phase: Phase = .idle
@@ -127,6 +140,8 @@ struct SessionMachine {
     func focusedMinutes(at now: Date) -> Int { Int((elapsed(at: now) / secondsPerMinute).rounded()) }
 
     mutating func start(_ plan: SessionPlan, at now: Date) {
+        var plan = plan
+        if plan.rounds > 1 && plan.roundLength == nil { plan.roundLength = plan.minutes }
         self.plan = plan
         phase = .focus
         startedAt = now
@@ -166,6 +181,7 @@ struct SessionMachine {
         if plan.openEnded { record.openEnded = true }
         if plan.localOnly { record.localOnly = true }
         if plan.lockIn { record.lockIn = true }
+        if plan.rounds > 1 { record.round = plan.round; record.rounds = plan.rounds }
         if !record.endedEarly && !plan.openEnded { streakCount += 1 }
         resumedAt = nil
         phase = .summary
@@ -186,21 +202,33 @@ struct SessionMachine {
                 if plan.openEnded { record?.openEnded = true }
                 if plan.localOnly { record?.localOnly = true }
                 if plan.lockIn { record?.lockIn = true }
+                if plan.rounds > 1 { record?.round = plan.round; record?.rounds = plan.rounds }
             }
         }
         reset()
         return record
     }
 
-    /// Starts a break; long every fourth block.
+    /// Starts a break; long every fourth block, but always short between rounds of a run.
     mutating func startBreak(short: Int = 5, long: Int = 15, at now: Date) -> Int {
-        let minutes = streakCount > 0 && streakCount % 4 == 0 ? long : short
+        let between = plan?.hasNextRound == true
+        let minutes = !between && streakCount > 0 && streakCount % 4 == 0 ? long : short
         phase = .breakTime
         startedAt = now
         target = Double(minutes) * secondsPerMinute
         accumulated = 0
         resumedAt = now
         return minutes
+    }
+
+    /// Starts the next round of a run now (when its break ends, or is skipped). Nil if none is left.
+    @discardableResult
+    mutating func startNextRound(at now: Date) -> Int? {
+        guard phase == .breakTime || phase == .summary, var next = plan, next.hasNextRound else { return nil }
+        next.round += 1
+        next.minutes = next.roundLength ?? next.minutes
+        start(next, at: now)
+        return next.round
     }
 
     /// Swaps in updated details (title, tracked total) without touching the clock.
@@ -232,6 +260,7 @@ struct SessionMachine {
             if let record = finish(at: end, early: false) { return .focusEnded(record) }
             return nil
         }
+        if let round = startNextRound(at: now) { return .nextRound(round) }
         reset()
         return .breakEnded
     }

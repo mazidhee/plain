@@ -116,9 +116,11 @@ struct RoomView: View {
     var scene: SceneKind? = nil
 
     var body: some View {
-        let p = period ?? DayPeriod.at(model.now)
+        // The real sun and moon for this place and minute, unless a period is forced (snapshots).
+        let sky = period.map(Sky.typical) ?? Sky.at(model.now)
+        let p = sky.period
         let grid = RoomScene.frame(activity: model.activity, tick: animator.frameTick, period: p,
-                                   musicPlaying: model.sound.musicOn, scene: scene ?? model.scene)
+                                   musicPlaying: model.sound.musicOn, scene: scene ?? model.scene, sky: sky)
         PixelView(grid: grid, palette: RoomScene.palette(p), pixel: pixel)
             .frame(width: 336, height: height, alignment: .top)
             .clipShape(RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
@@ -232,6 +234,7 @@ struct HomePane: View {
             return from > Date().addingTimeInterval(30) ? "Book \(t(from))–\(t(to))" : "\(verb) until \(t(to))"
         }
         if model.draftCountUp { return "\(verb) · count up" }
+        if model.draftRounds > 1 { return "\(verb) · \(model.draftRounds) × \(model.draftMinutes) min" }
         return "\(verb) · \(model.draftMinutes) min"
     }
 
@@ -268,6 +271,7 @@ struct HomePane: View {
                 }
                 .help("Time block: from one time to another")
             }
+            if !model.draftCountUp && !model.draftUseRange { roundsRow }
             if custom && !model.draftCountUp && !model.draftUseRange {
                 HStack(spacing: Space.s) {
                     Text("Length").font(TypeScale.body).foregroundStyle(Theme.muted)
@@ -293,6 +297,29 @@ struct HomePane: View {
                 }
             }
         }
+    }
+
+    /// Pomodoro rounds: focus, a short break, focus again, looping until the last round ends.
+    private var roundsRow: some View {
+        HStack(spacing: Space.s) {
+            HStack(spacing: 2) {
+                ForEach(1...4, id: \.self) { n in
+                    Segment(label: n == 1 ? "1" : "×\(n)", selected: model.draftRounds == n, accent: accent) { model.settings.rounds = n }
+                }
+            }
+            .padding(2)
+            .background(Capsule().fill(Theme.card))
+            .help("Pomodoro rounds: each block is followed by a \(model.settings.shortBreak)-minute break, then the next starts by itself")
+            Text(roundsCaption).font(TypeScale.meta).foregroundStyle(Theme.muted).lineLimit(1)
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var roundsCaption: String {
+        let n = model.draftRounds
+        guard n > 1 else { return "round" }
+        let end = model.runEnd(minutes: model.draftMinutes, rounds: n).formatted(date: .omitted, time: .shortened)
+        return "rounds · done \(end)"
     }
 
     private func tideBanner(_ mood: Activity) -> some View {

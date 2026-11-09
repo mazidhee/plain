@@ -75,6 +75,56 @@ enum Snapshot {
         lockDone.start(SessionPlan(title: "", category: .work, minutes: 50, lockIn: true), at: base.addingTimeInterval(-3000)); _ = lockDone.tick(at: base)
         model.preview(machine: lockDone, now: base, tasks: tasks, sessions: sessions, summary: "Saved in Plain's stats.")
         render(PopoverView(model: model), to: dir.appendingPathComponent("summary-lockin.png"))
+        // Rounds: picked on home, round 2 of 4 running, the break between rounds.
+        model.preview(machine: SessionMachine(), now: base, tasks: tasks, sessions: sessions)
+        model.draftMinutes = 50
+        let savedRounds = model.settings.rounds
+        model.settings.rounds = 4
+        render(PopoverView(model: model), to: dir.appendingPathComponent("home-rounds.png"))
+        var run = SessionMachine()
+        run.start(SessionPlan(title: "", category: .work, minutes: 50, lockIn: true, rounds: 4), at: base.addingTimeInterval(-3000 - 300))
+        _ = run.tick(at: base.addingTimeInterval(-300))
+        _ = run.startBreak(short: 5, long: 15, at: base.addingTimeInterval(-300))
+        _ = run.tick(at: base.addingTimeInterval(1))
+        model.preview(machine: run, now: base.addingTimeInterval(12 * 60), tasks: tasks, sessions: sessions)
+        render(PopoverView(model: model), to: dir.appendingPathComponent("running-round2.png"))
+        var between = SessionMachine()
+        between.start(SessionPlan(title: "", category: .work, minutes: 50, lockIn: true, rounds: 4), at: base.addingTimeInterval(-3000 - 120))
+        _ = between.tick(at: base.addingTimeInterval(-120))
+        _ = between.startBreak(short: 5, long: 15, at: base.addingTimeInterval(-120))
+        model.preview(machine: between, now: base, tasks: tasks, sessions: sessions)
+        model.setPreviewBreak(5)
+        render(PopoverView(model: model), to: dir.appendingPathComponent("running-round-break.png"))
+        model.settings.rounds = savedRounds
+
+        // Tide's API: the Stats card and the dashboard.
+        let (tide30, tide60, tideSessions) = demoTide(now: base)
+        model.preview(machine: SessionMachine(), now: base, tasks: tasks, sessions: sessions)
+        model.previewTide(tide30)
+        render(PopoverView(model: model, route: .stats), to: dir.appendingPathComponent("stats-tide.png"))
+        let dash = DashboardData(model: model)
+        dash.preview(tide: tide30, double: tide60, sessions: tideSessions)
+        dash.sessionsOverride = sessions
+        render(DashboardView(model: model, data: dash).frame(width: 1180, height: 2050), to: dir.appendingPathComponent("dashboard.png"))
+        model.previewTide(nil)
+
+        // The real sky over a day in Lagos.
+        let lagos = Place(lat: 6.45, lon: 3.4)
+        var lc = Calendar(identifier: .gregorian)
+        lc.timeZone = TimeZone(identifier: "Africa/Lagos")!
+        let lday = lc.date(from: DateComponents(year: 2026, month: 11, day: 24))!
+        render(HStack(spacing: 8) {
+            ForEach([(6, 20), (9, 0), (13, 0), (17, 50), (18, 40), (22, 0)], id: \.0) { h, m in
+                let t = lc.date(byAdding: .minute, value: h * 60 + m, to: lday)!
+                let sky = Sky.at(t, place: lagos)
+                VStack(spacing: 4) {
+                    PixelView(grid: RoomScene.frame(activity: .work, tick: 5, period: sky.period, musicPlaying: false, sky: sky), palette: RoomScene.palette(sky.period), pixel: 3)
+                    PixelView(grid: RoomScene.frame(activity: .breakTime, tick: 5, period: sky.period, musicPlaying: false, scene: .beach, sky: sky), palette: RoomScene.palette(sky.period), pixel: 3)
+                    Text(String(format: "%02d:%02d · %@", h, m, "\(sky.period)")).font(.caption).foregroundStyle(.white)
+                }
+            }
+        }.padding(8).background(Color.black), to: dir.appendingPathComponent("sky-day.png"))
+
         model.preview(machine: SessionMachine(), now: base, tasks: tasks, sessions: sessions)
         let day = cal.startOfDay(for: base)
         func seg(_ id: String, _ name: String, _ h0: Double, _ h1: Double) -> AppUsage.Segment {
@@ -142,6 +192,41 @@ enum Snapshot {
             out.append(CompletedSession(title: title, category: cat, start: end.addingTimeInterval(Double(-minutes * 60)), end: end, minutes: minutes, plannedMinutes: minutes))
         }
         return out
+    }
+
+    /// Thirty (and sixty) days of made-up Tide study, shaped like the API's answer.
+    static func demoTide(now: Date) -> (TideAPI.Summary, TideAPI.Summary, [TideAPI.Session]) {
+        let cal = Calendar.current
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
+        func summary(days: Int) -> TideAPI.Summary {
+            let dayRows = (0..<days).map { i -> TideAPI.Summary.Day in
+                let d = cal.date(byAdding: .day, value: i - days + 1, to: cal.startOfDay(for: now))!
+                let m = [0, 35, 80, 55, 120, 0, 25, 95, 60, 45][(i * 7 + 3) % 10]
+                return .init(date: f.string(from: d), minutes: m, sessions: m / 25, cards: m > 50 ? m / 4 : 0, answers: m / 20, accuracy: m >= 20 ? 0.55 + Double((i * 13) % 40) / 100 : nil)
+            }
+            let total = dayRows.reduce(0) { $0 + $1.minutes }
+            var s = TideAPI.Summary(generatedAt: "", range: .init(from: dayRows.first!.date, to: dayRows.last!.date, days: days),
+                                    now: .init(label: "teach: Dijkstra's algorithm", since: "", minutes: 18),
+                                    totals: .init(today: 45, thisWeek: 310, thisMonth: 1210, inRange: total, sessions: total / 25, studyDays: dayRows.filter { $0.minutes > 0 }.count,
+                                                  averagePerStudyDay: 62, streak: 6, longestStreak: 11),
+                                    days: dayRows, activities: [], notebooks: [], topics: [], hours: [], flashcards: .init(), answers: .init())
+            s.activities = [("lesson", 0.34), ("practice", 0.22), ("reading", 0.16), ("review", 0.12), ("exam", 0.09), ("chat", 0.07)].map { .init(activity: $0.0, minutes: Int(Double(total) * $0.1), sessions: Int(Double(total) * $0.1 / 22)) }
+            s.notebooks = [("Algorithms", 0.38), ("System design", 0.27), ("Mathematics", 0.2), ("Organic chemistry", 0.15)].map { .init(notebook: $0.0, minutes: Int(Double(total) * $0.1)) }
+            s.topics = [("teach: Dijkstra's algorithm", 210), ("System design ch. 6: replication", 160), ("Practice: dynamic programming", 140), ("Exam: calculus mock", 95), ("Flashcards: reactions", 70)].map { .init(label: $0.0, minutes: $0.1) }
+            s.hours = [0, 0, 0, 0, 0, 0, 10, 25, 60, 120, 95, 40, 20, 30, 55, 70, 45, 30, 50, 140, 160, 90, 30, 5]
+            s.flashcards = .init(reviewed: 412, again: 38, hard: 71, good: 241, easy: 62)
+            s.answers = .init(total: 96, right: 64, partly: 18, wrong: 14, averageScore: 0.74)
+            return s
+        }
+        let sessions = (0..<20).map { i -> TideAPI.Session in
+            let start = now.addingTimeInterval(Double(-i) * 3600 * 9 - 1800)
+            let kinds = ["lesson", "practice", "reading", "review", "exam"]
+            let m = [25, 40, 18, 55, 30][i % 5]
+            return .init(start: start, end: start.addingTimeInterval(Double(m * 60)), minutes: m, activity: kinds[i % 5],
+                         label: ["teach: Dijkstra's algorithm", "Practice: two pointers", "Replication and consensus", "Daily flashcards", "Calculus mock"][i % 5],
+                         notebook: ["Algorithms", "Algorithms", "System design", "Organic chemistry", "Mathematics"][i % 5])
+        }
+        return (summary(days: 30), summary(days: 60), sessions)
     }
 
     /// Lays a view out in an offscreen window and writes a 2x PNG.

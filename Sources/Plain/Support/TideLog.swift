@@ -18,6 +18,23 @@ enum TideLog {
         var lastLabel: String?
         var available = false
         var problem: String?
+        /// Came from Tide's study data API rather than its log file.
+        var fromAPI = false
+        var streak: Int?
+        /// What Tide is open on right now (API only).
+        var studyingNow: String?
+
+        init(todayMinutes: Int = 0, weekMinutes: Int = 0, lastLabel: String? = nil, available: Bool = false, problem: String? = nil,
+             fromAPI: Bool = false, streak: Int? = nil, studyingNow: String? = nil) {
+            self.todayMinutes = todayMinutes; self.weekMinutes = weekMinutes; self.lastLabel = lastLabel; self.available = available
+            self.problem = problem; self.fromAPI = fromAPI; self.streak = streak; self.studyingNow = studyingNow
+        }
+
+        /// The headline numbers from the API's summary.
+        init(api s: TideAPI.Summary) {
+            self.init(todayMinutes: s.totals.today, weekMinutes: s.totals.thisWeek, lastLabel: s.now?.label ?? s.topics.first?.label,
+                      available: true, fromAPI: true, streak: s.totals.streak, studyingNow: s.now?.label)
+        }
     }
 
     /// Tide's study log: PLAIN_TIDE_LOG for tests, else the vault from Tide's settings.

@@ -20,6 +20,9 @@ enum SelfTest {
         areas()
         search()
         tideAndApps()
+        rounds()
+        sky()
+        tideAPI()
         misc()
         print("selftest: \(passes) passed, \(failures) failed")
         return failures == 0
@@ -299,6 +302,95 @@ enum SelfTest {
         check(week.first { $0.bundleID == "code" }?.minutes == 210, "app time week", "\(week)")
         let inTide = AppUsage.seconds(of: "tide", in: segs, from: seg("x", 10, 11).start, to: seg("x", 10, 11).end)
         check(inTide == 1800, "seconds in an app over a window", "\(inTide)")
+    }
+
+    static func rounds() {
+        let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+        var m = SessionMachine()
+        m.start(SessionPlan(title: "Essay", category: .work, minutes: 50, rounds: 3), at: t0)
+        check(m.plan?.round == 1 && m.plan?.roundLength == 50, "run starts at round 1")
+        m.extend(minutes: 5)
+        guard case .focusEnded(let r1)? = m.tick(at: t0.addingTimeInterval(55 * 60)) else { check(false, "round 1 ends"); return }
+        check(r1.round == 1 && r1.rounds == 3 && r1.minutes == 55, "round 1 recorded", "\(r1)")
+        check(m.plan?.hasNextRound == true, "more rounds to come")
+        let b = m.startBreak(short: 10, long: 30, at: t0.addingTimeInterval(55 * 60))
+        check(b == 10 && m.phase == .breakTime, "short break between rounds")
+        let next = m.tick(at: t0.addingTimeInterval(65 * 60))
+        check(next == .nextRound(2) && m.phase == .focus && m.plan?.round == 2, "break ends into round 2", "\(String(describing: next))")
+        check(m.remaining(at: t0.addingTimeInterval(65 * 60)) == 50 * 60, "round 2 back to 50 min, not 55")
+        _ = m.tick(at: t0.addingTimeInterval(115 * 60))
+        _ = m.startBreak(at: t0.addingTimeInterval(115 * 60))
+        check(m.startNextRound(at: t0.addingTimeInterval(117 * 60)) == 3, "skip break starts round 3")
+        guard case .focusEnded(let r3)? = m.tick(at: t0.addingTimeInterval(167 * 60)) else { check(false, "round 3 ends"); return }
+        check(r3.round == 3 && m.plan?.hasNextRound == false, "last round")
+        check(m.startNextRound(at: t0.addingTimeInterval(168 * 60)) == nil, "nothing after the last round")
+        _ = m.startBreak(at: t0.addingTimeInterval(168 * 60))
+        check(m.tick(at: t0.addingTimeInterval(200 * 60)) == .breakEnded && m.phase == .idle, "a break after the last round just ends")
+        var single = SessionMachine()
+        single.start(SessionPlan(title: "x", category: .work, minutes: 25), at: t0)
+        check(single.plan?.roundLength == nil && single.plan?.hasNextRound == false, "one block is not a run")
+    }
+
+    static func sky() {
+        check(Place.parse(iso6709: "+0627+00324").map { abs($0.lat - 6.45) < 0.01 && abs($0.lon - 3.4) < 0.01 } == true, "iso6709 lagos")
+        check(Place.parse(iso6709: "+404251-0740023").map { abs($0.lat - 40.714) < 0.01 && abs($0.lon + 74.006) < 0.01 } == true, "iso6709 seconds")
+        check(Place.zone("Africa/Lagos", table: "NG\t+0627+00324\tAfrica/Lagos\n") == Place(lat: 6.45, lon: 3.4), "zone table lookup")
+        // Lagos, 9 Nov 2026 (WAT, UTC+1): sunrise ≈ 06:35, sunset ≈ 18:27.
+        let lagos = Place(lat: 6.45, lon: 3.4)
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "Africa/Lagos")!
+        let day = cal.date(from: DateComponents(year: 2026, month: 11, day: 9))!
+        let at = { (h: Int, m: Int) in cal.date(byAdding: .minute, value: h * 60 + m, to: day)! }
+        let set = Solar.nextCrossing(after: at(12, 0), place: lagos, rising: false)!
+        check(abs(set.timeIntervalSince(at(18, 27))) < 5 * 60, "lagos sunset", "\(set)")
+        let rise = Solar.nextCrossing(after: day, place: lagos, rising: true)!
+        check(abs(rise.timeIntervalSince(at(6, 35))) < 5 * 60, "lagos sunrise", "\(rise)")
+        check(Sky.at(at(12, 0), place: lagos).period == .day && Sky.at(at(12, 0), place: lagos).sun != nil, "noon is day with a sun")
+        check(Sky.at(at(17, 45), place: lagos).period == .golden, "17:45 golden")
+        check(Sky.at(at(18, 45), place: lagos).period == .dusk && Sky.at(at(18, 45), place: lagos).sun == nil, "18:45 dusk, sun gone")
+        check(Sky.at(at(23, 0), place: lagos).period == .night, "23:00 night")
+        check(Sky.at(at(6, 20), place: lagos).period == .dawn, "06:20 dawn")
+        // New moon 9 Nov 2026; full moon 24 Nov 2026.
+        check(Solar.illumination(Solar.moonPhase(at: at(12, 0))) < 0.05, "new moon", "\(Solar.moonPhase(at: at(12, 0)))")
+        check(Solar.illumination(Solar.moonPhase(at: cal.date(byAdding: .day, value: 15, to: at(12, 0))!)) > 0.95, "full moon")
+        check(Sky.at(cal.date(byAdding: .day, value: 15, to: at(21, 0))!, place: lagos).moon != nil, "full moon is up at 9pm")
+        // The real sky draws with the palette and differs from the fixed one.
+        let sky = Sky.at(at(17, 50), place: lagos)
+        for scene in [SceneKind.room, .beach] {
+            let g = RoomScene.frame(activity: .work, tick: 2, period: sky.period, musicPlaying: false, scene: scene, sky: sky)
+            let pal = RoomScene.palette(sky.period)
+            check(Set(g.cellsUsed).subtracting(["."]).allSatisfy { pal[$0] != nil }, "\(scene) real sky palette")
+        }
+        var moonGrid = PixelGrid(width: 10, height: 10, fill: ".")
+        RoomScene.drawMoon(&moonGrid, cx: 5, cy: 5, phase: 0.25, clip: (0, 0, 10, 10))
+        check(moonGrid.count(of: "☼") > 6 && moonGrid.count(of: "◐") > 6, "half moon is half lit", "\(moonGrid.count(of: "☼"))/\(moonGrid.count(of: "◐"))")
+    }
+
+    static func tideAPI() {
+        let json = """
+        {"generatedAt":"2026-11-09T18:00:00.000Z","range":{"from":"2026-11-03","to":"2026-11-09","days":7},
+         "now":{"label":"teach: zero","since":"2026-11-09T17:40:00.000Z","minutes":20},
+         "totals":{"today":45,"thisWeek":120,"thisMonth":300,"inRange":120,"sessions":6,"studyDays":3,"averagePerStudyDay":40,"streak":2,"longestStreak":5},
+         "days":[{"date":"2026-11-08","minutes":75,"sessions":3,"cards":12,"answers":4,"accuracy":0.75},{"date":"2026-11-09","minutes":45,"sessions":3,"cards":0,"answers":0}],
+         "activities":[{"activity":"lesson","minutes":80,"sessions":4},{"activity":"review","minutes":40,"sessions":2}],
+         "notebooks":[{"notebook":"Mathematics","minutes":80}],"topics":[{"label":"teach: zero","minutes":45}],
+         "hours":[0,0,0,0,0,0,0,0,0,30,0,0,0,0,0,0,0,0,90,0,0,0,0,0],
+         "flashcards":{"reviewed":12,"again":1,"hard":2,"good":7,"easy":2},"answers":{"total":4,"right":3,"partly":0,"wrong":1,"averageScore":0.78}}
+        """
+        do {
+            let s = try TideAPI.decoder.decode(TideAPI.Summary.self, from: Data(json.utf8))
+            let t = TideLog.Summary(api: s)
+            check(t.todayMinutes == 45 && t.weekMinutes == 120 && t.streak == 2 && t.studyingNow == "teach: zero" && t.fromAPI, "api summary → card", "\(t)")
+            check(s.days[0].accuracy == 0.75 && s.days[1].accuracy == nil && s.hours.count == 24, "api days")
+        } catch { check(false, "api summary decodes", "\(error)") }
+        let list = """
+        {"from":"2026-11-01T00:00:00.000Z","to":"2026-11-09T23:59:59.999Z","count":1,"minutes":25,
+         "sessions":[{"start":"2026-11-09T10:02:00.000Z","end":"2026-11-09T10:27:00.000Z","minutes":25,"activity":"lesson","label":"teach: zero","notebook":"Mathematics","path":"Mathematics/zero.md"}]}
+        """
+        let sessions = try? TideAPI.decoder.decode(TideAPI.SessionList.self, from: Data(list.utf8))
+        check(sessions?.sessions.first?.minutes == 25 && sessions?.sessions.first?.start == ISO8601DateFormatter().date(from: "2026-11-09T10:02:00Z"), "api sessions decode")
+        check(ChartColor.activity("lesson") == ChartColor.series[0] && ChartColor.activity("nonsense") == ChartColor.series.last, "kind colours fixed")
+        check(TideAPI.Failure.badToken.description.contains("token"), "api failure text")
     }
 
     static func misc() {

@@ -52,14 +52,23 @@ final class AppModel: ObservableObject {
     @Published var tideMood: Activity?
     /// When Tide last went to the background, for ending a Tide-tied tracker.
     private(set) var leftTideAt: Date?
-    /// Tide's own study log, read-only.
+    /// Tide's study time: from its study data API when a token is set, else its log file. Read-only.
     @Published private(set) var tide = TideLog.Summary()
+    /// The last 30 days from Tide's API, for Stats and the dashboard.
+    @Published private(set) var tideSummary: TideAPI.Summary?
+    /// Why the API couldn't be read (nil when it was, or no token is set).
+    @Published private(set) var tideAPIProblem: String?
+    /// The pasted token, cached from the Keychain.
+    private(set) lazy var tideToken: String? = Keychain.tideToken
+    private var tideFetch: Task<Void, Never>?
     let appUsage = AppUsage()
     private var lastTideRead = Date.distantPast
     /// How long Tide may be out of focus before a Tide-tied tracker stops (end time = when you left).
     var tideAwayLimit: TimeInterval = 5 * 60
     /// Called when a session starts from outside (a plain:// link), to drop the popover down.
     var onExternalStart: (() -> Void)?
+    /// Opens the dashboard window (set by the app delegate).
+    var onOpenDashboard: (() -> Void)?
     @Published private(set) var thingsStatus: ThingsStatus = .unknown
     @Published private(set) var pendingLogs = 0
 
@@ -160,8 +169,32 @@ final class AppModel: ObservableObject {
 
     func refreshTide() {
         guard !isPreview else { return }
-        tide = TideLog.read()
         lastTideRead = Date()
+        guard let token = tideToken, !token.isEmpty else {
+            tide = TideLog.read()
+            tideSummary = nil
+            tideAPIProblem = nil
+            return
+        }
+        tideFetch?.cancel()
+        tideFetch = Task {
+            do {
+                let s = try await TideAPI.summary(days: 30, token: token)
+                await MainActor.run { self.tideSummary = s; self.tide = TideLog.Summary(api: s); self.tideAPIProblem = nil }
+            } catch {
+                // Tide closed or the token changed: keep the log file's numbers going.
+                let why = (error as? TideAPI.Failure)?.description ?? "\(error)"
+                await MainActor.run { self.tide = TideLog.read(); self.tideAPIProblem = why }
+            }
+        }
+    }
+
+    /// Saves (or clears) the study data API token and reads Tide with it.
+    func setTideToken(_ token: String) {
+        let t = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        Keychain.tideToken = t.isEmpty ? nil : t
+        tideToken = t.isEmpty ? nil : t
+        refreshTide()
     }
 
     enum TideChoice: String, CaseIterable { case studying, exam, flashcards, chilling
@@ -227,7 +260,7 @@ final class AppModel: ObservableObject {
         let category = selectedTask == nil ? (parsed.category ?? draftCategory) : draftCategory
         let minutes = selectedTask == nil ? (parsed.minutes ?? draftMinutes) : draftMinutes
         start(SessionPlan(title: title, category: category, minutes: minutes,
-                          taskID: selectedTask?.id, trackedBefore: selectedTask?.trackedMinutes ?? 0))
+                          taskID: selectedTask?.id, trackedBefore: selectedTask?.trackedMinutes ?? 0, rounds: draftRounds))
     }
 
     /// The home screen's one primary action: start on the picked to-do, or Lock in with none.
@@ -235,7 +268,17 @@ final class AppModel: ObservableObject {
         let task = selectedTask
         if draftUseRange { scheduleFromDraft(); return }
         start(SessionPlan(title: task?.title ?? "", category: draftCategory, minutes: draftMinutes, taskID: task?.id,
-                          trackedBefore: task?.trackedMinutes ?? 0, openEnded: draftCountUp, lockIn: task == nil))
+                          trackedBefore: task?.trackedMinutes ?? 0, openEnded: draftCountUp, lockIn: task == nil,
+                          rounds: draftCountUp ? 1 : draftRounds))
+    }
+
+    /// Rounds for the next timed session (Settings › rounds; the home screen's Rounds picker).
+    var draftRounds: Int { max(1, settings.rounds) }
+
+    /// When a run of `rounds` × `minutes` with short breaks between would end, starting now.
+    func runEnd(minutes: Int, rounds: Int, from start: Date = Date()) -> Date {
+        let focus = minutes * rounds, breaks = settings.shortBreak * max(0, rounds - 1)
+        return start.addingTimeInterval(Double(focus + breaks) * machine.secondsPerMinute)
     }
 
     /// Attaches a to-do to the running session; its time lands there at the end.
@@ -251,9 +294,10 @@ final class AppModel: ObservableObject {
     /// Runs the same kind of session again from the summary.
     func again() {
         guard let last = machine.lastCompleted else { return }
+        let length = machine.plan?.roundLength ?? (last.openEnded == true ? draftMinutes : last.plannedMinutes)
         start(SessionPlan(title: last.lockIn == true && last.taskID == nil ? "" : last.title, category: last.category,
-                          minutes: last.openEnded == true ? draftMinutes : last.plannedMinutes, taskID: last.taskID,
-                          openEnded: last.openEnded == true, lockIn: last.lockIn == true))
+                          minutes: length, taskID: last.taskID,
+                          openEnded: last.openEnded == true, lockIn: last.lockIn == true, rounds: last.rounds ?? 1))
     }
 
     /// The draft's time block: starts now if `from` has passed, otherwise waits for it.
@@ -347,6 +391,19 @@ final class AppModel: ObservableObject {
         now = Date()
     }
 
+    /// Skip break: straight into the next round of a run, or back home.
+    func skipBreak() {
+        if machine.startNextRound(at: Date()) != nil {
+            if settings.autoSound { sound.fadeIn(seconds: 2) }
+            now = Date()
+        } else {
+            cancel()
+        }
+    }
+
+    /// Ends a run of rounds during its break: nothing more starts.
+    func endRun() { cancel() }
+
     func dismissSummary() {
         machine.dismissSummary()
         now = Date()
@@ -384,6 +441,11 @@ final class AppModel: ObservableObject {
         case .breakEnded:
             if settings.chimeEnabled { sound.chime() }
             notify(title: "Break's over", body: "Ready for another round?")
+        case .nextRound(let round):
+            if settings.chimeEnabled { sound.chime() }
+            if settings.autoSound { sound.fadeIn(seconds: 3) }
+            let total = machine.plan?.rounds ?? round
+            notify(title: "Round \(round) of \(total)", body: "\(machine.plan?.minutes ?? 0) min · \(machine.plan?.displayTitle ?? "")")
         }
     }
 
@@ -397,12 +459,19 @@ final class AppModel: ObservableObject {
             summaryNote = "Under a minute, so nothing was logged."
             return
         }
+        let moreRounds = natural && !tracker && machine.plan?.hasNextRound == true
         if !tracker {
-            notify(title: natural ? "Session done · \(done.minutes) min" : "Finished early · \(done.minutes) min",
-                   body: "\(done.category.emoji) \(done.title)")
+            if moreRounds, let r = done.round, let n = done.rounds {
+                notify(title: "Round \(r) of \(n) done · \(done.minutes) min", body: "Break for \(settings.shortBreak) min, then round \(r + 1).")
+            } else if let n = done.rounds, natural {
+                notify(title: "All \(n) rounds done", body: "\(done.category.emoji) \(done.title) · \(done.minutes * n) min")
+            } else {
+                notify(title: natural ? "Session done · \(done.minutes) min" : "Finished early · \(done.minutes) min",
+                       body: "\(done.category.emoji) \(done.title)")
+            }
         }
         record(done)
-        if natural && settings.breaksEnabled && !tracker { startBreak() }
+        if moreRounds || natural && settings.breaksEnabled && !tracker { startBreak() }
     }
 
     /// Study that happened mostly in Tide belongs to Tide's log, so it isn't sent to Things again.
@@ -624,6 +693,7 @@ final class AppModel: ObservableObject {
                     if let task = try? await client.task(id) { await MainActor.run { self.attach(task) } }
                 }
             }
+        case "dashboard": onOpenDashboard?()
         case "pause": pause()
         case "resume": resume()
         case "finish": finishEarly()
@@ -663,6 +733,11 @@ extension SessionMachine {
 
 extension AppModel {
     func setPreviewBreak(_ minutes: Int) { breakMinutes = minutes }
+
+    func previewTide(_ s: TideAPI.Summary?) {
+        tideSummary = s
+        if let s { tide = TideLog.Summary(api: s); tideToken = "preview" }
+    }
 
     func previewAreas(_ titles: [String], tasks: [ThingsTask], category: Category) {
         areaTitles = titles
