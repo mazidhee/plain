@@ -329,12 +329,18 @@ struct PromptCard: View {
             case .tide:
                 TidePrompt(model: model).padding(.bottom, 10)
             case .editor(let name):
-                HStack(spacing: 8) {
-                    Text("Deep in \(name)? Make it a session.").font(Theme.rounded(13, .semibold)).foregroundStyle(Theme.text)
-                    Spacer()
-                    Chip(label: "25 min", selected: true) { model.start(SessionPlan(title: "", category: .work, minutes: 25)) }
-                    Chip(label: "50 min") { model.start(SessionPlan(title: "", category: .work, minutes: 50)) }
-                    Button { model.prompt = nil } label: { Image(systemName: "xmark").foregroundStyle(Theme.faint) }.buttonStyle(.plain)
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("Deep in \(name)? Make it a session.").font(Theme.rounded(13, .semibold)).foregroundStyle(Theme.text)
+                        Spacer()
+                        Button { model.prompt = nil } label: { Image(systemName: "xmark").foregroundStyle(Theme.faint) }.buttonStyle(.plain)
+                    }
+                    HStack(spacing: 6) {
+                        Chip(label: "25 min", selected: true) { model.startFromNudge(minutes: 25) }
+                        Chip(label: "50 min") { model.startFromNudge(minutes: 50) }
+                        Chip(label: "3 × 50") { model.startFromNudge(minutes: 50, rounds: 3) }
+                            .help("Three 50-minute rounds with \(model.settings.shortBreak)-minute breaks between")
+                    }
                 }
                 .padding(10)
             }

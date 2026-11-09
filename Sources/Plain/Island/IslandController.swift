@@ -78,8 +78,9 @@ final class IslandController {
         if model.phase != .summary { doneWork?.cancel(); doneWork = nil }
         lastPhase = model.phase
 
-        // Prompts dismiss themselves unless hovered.
-        if model.prompt != nil && dismissWork == nil {
+        // Prompts on the island dismiss themselves unless hovered. With the island off, the editor nudge is
+        // only a ✦ in the menu bar, so it waits until the popover has been opened (AppDelegate) instead.
+        if model.prompt != nil && dismissWork == nil && (model.settings.islandEnabled || model.prompt == .tide) {
             scheduleDismiss(after: model.prompt == .tide ? 45 : 15)
         } else if model.prompt == nil {
             dismissWork?.cancel(); dismissWork = nil

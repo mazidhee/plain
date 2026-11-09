@@ -224,6 +224,11 @@ final class AppModel: ObservableObject {
         objectWillChange.send()
     }
 
+    /// The editor nudge's choices: one block, or a run of pomodoro rounds.
+    func startFromNudge(minutes: Int, rounds: Int = 1) {
+        start(SessionPlan(title: "", category: .work, minutes: minutes, rounds: rounds))
+    }
+
     /// Starts an open-ended tracker (count-up): no length, no chime, no break.
     func startTracker(title: String, category: Category) {
         start(SessionPlan(title: title, category: category, minutes: 0, openEnded: true), sound: false)

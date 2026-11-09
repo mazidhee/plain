@@ -157,6 +157,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
 
     // MARK: Popover, quick start, settings
 
+    /// The editor nudge has been seen once the popover closes; a session started from it clears it sooner.
+    func popoverDidClose(_ notification: Notification) {
+        if case .editor? = model.prompt { model.prompt = nil }
+    }
+
     @objc func togglePopover(_ sender: Any?) {
         if popover.isShown { popover.performClose(sender) } else { showPopover() }
     }

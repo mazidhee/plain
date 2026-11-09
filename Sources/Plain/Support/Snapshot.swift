@@ -167,6 +167,7 @@ enum Snapshot {
         island(.prompt, "island-tide-prompt.png")
         model.preview(machine: SessionMachine(), now: base, tasks: tasks, sessions: sessions, prompt: .editor(appName: "Ghostty"))
         island(.nudge, "island-nudge.png")
+        render(PopoverView(model: model), to: dir.appendingPathComponent("popover-editor-nudge.png"))
 
         // Art sheets.
         render(CharacterSheet(), to: dir.appendingPathComponent("character-sheet.png"))

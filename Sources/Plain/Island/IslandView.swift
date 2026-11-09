@@ -199,10 +199,9 @@ struct IslandView: View {
             Text(nudgeText).font(Theme.rounded(13, .semibold)).foregroundStyle(.white).lineLimit(1)
             Spacer()
             ForEach([25, 50], id: \.self) { m in
-                Chip(label: "\(m) min", selected: m == 25) {
-                    model.start(SessionPlan(title: "", category: .work, minutes: m))
-                }
+                Chip(label: "\(m) min", selected: m == 25) { model.startFromNudge(minutes: m) }
             }
+            Chip(label: "3 × 50") { model.startFromNudge(minutes: 50, rounds: 3) }
             Button { model.prompt = nil } label: { Image(systemName: "xmark").foregroundStyle(Theme.faint) }.buttonStyle(.plain)
         }
         .padding(.top, 12)
