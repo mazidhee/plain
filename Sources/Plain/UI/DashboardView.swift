@@ -26,6 +26,8 @@ final class DashboardData: ObservableObject {
     @Published private(set) var problem: String?
     @Published private(set) var loading = false
     @Published private(set) var loadedAt: Date?
+    @Published var tab: DashTab = .overview
+    @Published var sessionFilter = "All"
 
     init(model: AppModel) { self.model = model }
 
@@ -106,59 +108,68 @@ struct LogRow: Identifiable {
     var id: String { "\(source)-\(start.timeIntervalSince1970)-\(title)" }
 }
 
+enum DashTab: String, CaseIterable { case overview = "Overview", tide = "Tide", plain = "Plain", sessions = "Sessions" }
+
 /// The dashboard window: where the time went, in depth, for Tide study and Plain focus together.
 struct DashboardView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var data: DashboardData
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: Space.xl) {
-                header
-                if let problem = data.problem { notice(problem) }
-                kpis
-                DayChart(points: dayPoints, days: data.days).card("Where your time goes", subtitle: "Minutes per day: Tide study and Plain focus")
-                HStack(alignment: .top, spacing: Space.l) {
-                    KindBars(rows: data.tide?.activities ?? []).card("Tide by kind of study", subtitle: kindSubtitle)
-                    HourChart(tide: data.tide?.hours ?? Array(repeating: 0, count: 24), plain: plainHours)
-                        .card("When you work", subtitle: peakHourText)
+        VStack(spacing: 0) {
+            header
+            Divider().overlay(Theme.line)
+            ScrollView {
+                VStack(alignment: .leading, spacing: Space.l) {
+                    if let problem = data.problem { notice(problem) }
+                    switch data.tab {
+                    case .overview: overview
+                    case .tide: tidePage
+                    case .plain: plainPage
+                    case .sessions: sessionsPage
+                    }
                 }
-                HStack(alignment: .top, spacing: Space.l) {
-                    RankedList(rows: (data.tide?.notebooks ?? []).map { ($0.notebook, $0.minutes) }, color: ChartColor.tide, empty: "No notebooks yet.")
-                        .card("Notebooks", subtitle: "Tide minutes per notebook")
-                    RankedList(rows: (data.tide?.topics ?? []).map { ($0.label, $0.minutes) }, color: ChartColor.tide, empty: "No topics yet.")
-                        .card("Longest topics", subtitle: "What you spent most time on in Tide")
-                }
-                HStack(alignment: .top, spacing: Space.l) {
-                    PerformanceCard(summary: data.tide).card("How it went", subtitle: "Answers in lessons and quizzes, and flashcards")
-                    RankedList(rows: plainByMode, color: ChartColor.plain, empty: "No Plain sessions in this range.", colors: plainModeColors)
-                        .card("Plain focus by mode", subtitle: "Work, study, exams, reading and chilling")
-                }
-                HStack(alignment: .top, spacing: Space.l) {
-                    RankedList(rows: plainTopTitles, color: ChartColor.plain, empty: "Nothing yet.")
-                        .card("Top focus", subtitle: "Plain sessions by to-do or title")
-                    AppTimeList(model: model).card("Apps in front", subtitle: "Screen time, local only")
-                }
-                SessionLog(rows: logRows).card("Every session", subtitle: "\(logRows.count) in the last \(data.days) days, newest first")
+                .padding(.horizontal, 28)
+                .padding(.vertical, Space.xl)
+                .frame(maxWidth: 1180)
+                .frame(maxWidth: .infinity)
             }
-            .padding(28)
-            .frame(maxWidth: 1180)
-            .frame(maxWidth: .infinity)
         }
         .background(Theme.bg)
+        .ignoresSafeArea(.container, edges: .top)
         .preferredColorScheme(.dark)
         .onAppear { if data.loadedAt == nil && !model.isPreview { data.load() } }
     }
 
     // MARK: Header
 
+    /// Clear of the traffic lights: tabs in the middle, range and refresh on the right.
     private var header: some View {
-        HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: Space.xs) {
-                Text("Your time").font(Theme.rounded(28, .bold)).foregroundStyle(Theme.text)
-                Text(sourceLine).font(TypeScale.meta).foregroundStyle(Theme.muted)
+        HStack(spacing: Space.l) {
+            HStack(spacing: Space.s) {
+                PixelView(grid: Wren.frame(.study, tick: 0), palette: Wren.palette, pixel: 1.6)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("Your time").font(Theme.rounded(16, .bold)).foregroundStyle(Theme.text)
+                    Text(sourceLine).font(Theme.rounded(10)).foregroundStyle(Theme.muted).lineLimit(1)
+                }
             }
-            Spacer()
+            .padding(.leading, 76)
+            Spacer(minLength: Space.l)
+            HStack(spacing: 2) {
+                ForEach(DashTab.allCases, id: \.self) { t in
+                    Button { data.tab = t } label: {
+                        Text(t.rawValue).font(Theme.rounded(12, data.tab == t ? .bold : .medium))
+                            .foregroundStyle(data.tab == t ? Theme.text : Theme.muted)
+                            .padding(.horizontal, 14).frame(height: 28)
+                            .background(Capsule().fill(data.tab == t ? Theme.cardHi : .clear))
+                            .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(3)
+            .background(Capsule().fill(Theme.card))
+            Spacer(minLength: Space.l)
             HStack(spacing: 2) {
                 ForEach([7, 30, 90, 365], id: \.self) { d in
                     Segment(label: d == 365 ? "1y" : "\(d)d", selected: data.days == d, accent: Theme.accent) { data.days = d }
@@ -169,12 +180,14 @@ struct DashboardView: View {
             IconButton(symbol: "arrow.clockwise", help: "Refresh") { data.load(); model.refreshTide() }
                 .opacity(data.loading ? 0.4 : 1)
         }
+        .padding(.horizontal, Space.l)
+        .frame(height: 56)
+        .background(Theme.bg)
     }
 
     private var sourceLine: String {
         var parts = ["Last \(data.days) days"]
-        if let t = data.loadedAt { parts.append("Tide read \(t.formatted(date: .omitted, time: .shortened))") }
-        if let now = data.tide?.now { parts.append("Studying now: \(now.label)") }
+        if let t = data.loadedAt { parts.append("updated \(t.formatted(date: .omitted, time: .shortened))") }
         return parts.joined(separator: " · ")
     }
 
@@ -183,38 +196,207 @@ struct DashboardView: View {
             Image(systemName: "exclamationmark.circle").foregroundStyle(Theme.accent)
             Text("Tide: \(text) Plain's own numbers still show.").font(TypeScale.body).foregroundStyle(Theme.text)
             Spacer()
+            if data.problem == TideAPI.Failure.noToken.description {
+                Button("Paste token") {
+                    if let t = NSPasteboard.general.string(forType: .string) { model.setTideToken(t); data.load() }
+                }
+                .help("Copy the token in Tide › Settings › Tools first")
+            }
         }
         .padding(Space.m)
         .background(RoundedRectangle(cornerRadius: Radius.control).fill(Theme.card))
     }
 
-    // MARK: Numbers
+    // MARK: Pages
+
+    private var overview: some View {
+        VStack(alignment: .leading, spacing: Space.l) {
+            HStack(alignment: .top, spacing: Space.l) {
+                hero.frame(width: 420)
+                kpiGrid
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            DayChart(points: dayPoints, days: data.days).card("Where your time goes", subtitle: "Minutes per day, Tide study and Plain focus stacked")
+            row {
+                CalendarHeat(days: dayTotals, start: data.rangeStart).card("Every day", subtitle: activeDaysText)
+                WeekHourHeat(cells: weekHour).card("When you work", subtitle: peakText)
+            }
+            row {
+                KindBars(rows: data.tide?.activities ?? []).card("Tide by kind of study", subtitle: kindSubtitle)
+                RankedList(rows: plainByMode, color: ChartColor.plain, empty: "No Plain sessions in this range.", colors: plainModeColors)
+                    .card("Plain by mode", subtitle: "Work, study, exams, reading and chilling")
+            }
+        }
+    }
+
+    private var tidePage: some View {
+        VStack(alignment: .leading, spacing: Space.l) {
+            HStack(spacing: Space.l) {
+                Tile(title: "Tide study", value: Duration.short(tideTotal), detail: "in the last \(data.days) days", dot: ChartColor.tide)
+                Tile(title: "Today", value: Duration.short(data.tide?.totals.today ?? model.tide.todayMinutes), detail: "this week \(Duration.short(data.tide?.totals.thisWeek ?? model.tide.weekMinutes))")
+                Tile(title: "Study days", value: "\(data.tide?.totals.studyDays ?? 0)", detail: "avg \(Duration.short(data.tide?.totals.averagePerStudyDay ?? 0)) a day")
+                Tile(title: "Streak", value: "\(data.tide?.totals.streak ?? 0)d", detail: "longest \(data.tide?.totals.longestStreak ?? 0)d", icon: "flame.fill")
+            }
+            if let now = data.tide?.now {
+                Label("Studying now: \(now.label) · \(Duration.short(now.minutes))", systemImage: "dot.radiowaves.left.and.right")
+                    .font(TypeScale.bodyStrong).foregroundStyle(Theme.study)
+                    .padding(Space.m).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: Radius.control).fill(Theme.study.opacity(0.12)))
+            }
+            row {
+                KindBars(rows: data.tide?.activities ?? []).card("By kind of study", subtitle: kindSubtitle)
+                HourChart(tide: data.tide?.hours ?? Array(repeating: 0, count: 24), plain: Array(repeating: 0, count: 24), legend: false)
+                    .card("Hours of the day", subtitle: "Minutes of study started in each hour")
+            }
+            row {
+                PerformanceCard(summary: data.tide).card("How it went", subtitle: "Answers in lessons and quizzes, and flashcards")
+                VStack(spacing: Space.l) {
+                    RankedList(rows: (data.tide?.notebooks ?? []).map { ($0.notebook, $0.minutes) }, color: ChartColor.tide, empty: "No notebooks yet.")
+                        .card("Notebooks", subtitle: "Minutes per notebook")
+                    RankedList(rows: (data.tide?.topics ?? []).map { ($0.label, $0.minutes) }, color: ChartColor.tide, empty: "No topics yet.")
+                        .card("Longest topics", subtitle: "What you spent most time on")
+                }
+            }
+        }
+    }
+
+    private var plainPage: some View {
+        let runs = data.plainSessions.filter { $0.rounds != nil }
+        let fullRuns = runs.filter { $0.round == $0.rounds && !$0.endedEarly }.count
+        return VStack(alignment: .leading, spacing: Space.l) {
+            HStack(spacing: Space.l) {
+                Tile(title: "Plain focus", value: Duration.short(plainTotal), detail: "in the last \(data.days) days", dot: ChartColor.plain)
+                Tile(title: "Sessions", value: "\(data.plainSessions.count)", detail: "avg \(Duration.short(plainTotal / max(1, data.plainSessions.count)))")
+                Tile(title: "Pomodoro rounds", value: "\(runs.count)", detail: "\(fullRuns) full run\(fullRuns == 1 ? "" : "s") finished")
+                Tile(title: "Finished as planned", value: "\(data.plainSessions.isEmpty ? 0 : data.plainSessions.filter { !$0.endedEarly }.count * 100 / data.plainSessions.count)%",
+                     detail: { let n = data.plainSessions.filter(\.endedEarly).count; return n == 0 ? "none ended early" : "\(n) ended early" }())
+            }
+            row {
+                RankedList(rows: plainByMode, color: ChartColor.plain, empty: "No Plain sessions in this range.", colors: plainModeColors)
+                    .card("By mode", subtitle: "Work, study, exams, reading and chilling")
+                RankedList(rows: plainTopTitles, color: ChartColor.plain, empty: "Nothing yet.")
+                    .card("Top focus", subtitle: "By to-do or title")
+            }
+            row {
+                HourChart(tide: Array(repeating: 0, count: 24), plain: plainHours, legend: false).card("Hours of the day", subtitle: "Minutes of focus started in each hour")
+                AppRows(model: model).card("Apps in front", subtitle: "This week, local only")
+            }
+        }
+    }
+
+    private var sessionsPage: some View {
+        let rows = logRows.filter { data.sessionFilter == "All" || $0.source == data.sessionFilter }
+        return VStack(alignment: .leading, spacing: Space.m) {
+            HStack {
+                HStack(spacing: 2) {
+                    ForEach(["All", "Tide", "Plain"], id: \.self) { f in
+                        Segment(label: f, selected: data.sessionFilter == f, accent: Theme.accent) { data.sessionFilter = f }
+                            .frame(width: 56)
+                    }
+                }
+                .padding(2).background(Capsule().fill(Theme.card))
+                Spacer()
+                Text("\(rows.count) sessions · \(Duration.short(rows.reduce(0) { $0 + $1.minutes }))").font(TypeScale.meta).foregroundStyle(Theme.muted)
+            }
+            SessionLog(rows: rows).card("Every session", subtitle: "Newest first, the last \(data.days) days")
+        }
+    }
+
+    /// Two cards side by side, as tall as the taller one.
+    private func row<A: View, B: View>(@ViewBuilder _ content: () -> TupleView<(A, B)>) -> some View {
+        HStack(alignment: .top, spacing: Space.l) { content() }.fixedSize(horizontal: false, vertical: true)
+    }
+
+    // MARK: Hero and numbers
 
     private var tideTotal: Int { data.tide?.totals.inRange ?? 0 }
     private var plainTotal: Int { data.plainSessions.reduce(0) { $0 + $1.minutes } }
+    private var tideToday: Int { data.tide?.totals.today ?? model.tide.todayMinutes }
+    private var plainToday: Int { model.stats.todayMinutes }
 
-    private var kpis: some View {
+    /// Today in the pixel clock, split by app, with the last seven days underneath.
+    private var hero: some View {
+        let today = tideToday + plainToday
+        let week = Array(dayTotals.suffix(7))
+        let peak = max(30, week.map(\.1).max() ?? 0)
+        return VStack(alignment: .leading, spacing: Space.l) {
+            Text("TODAY").font(Theme.rounded(10, .bold)).foregroundStyle(Theme.faint).kerning(0.6)
+            PixelClock(text: pixelDuration(today), pixel: 7, ink: Theme.textInk)
+            VStack(alignment: .leading, spacing: Space.s) {
+                GeometryReader { g in
+                    HStack(spacing: 2) {
+                        if today == 0 { RoundedRectangle(cornerRadius: 3).fill(Theme.line) }
+                        if tideToday > 0 { RoundedRectangle(cornerRadius: 3).fill(ChartColor.tide).frame(width: (g.size.width - 2) * CGFloat(tideToday) / CGFloat(max(1, today))) }
+                        if plainToday > 0 { RoundedRectangle(cornerRadius: 3).fill(ChartColor.plain) }
+                    }
+                }
+                .frame(height: 8)
+                HStack(spacing: Space.l) {
+                    legend("Tide \(Duration.short(tideToday))", ChartColor.tide)
+                    legend("Plain \(Duration.short(plainToday))", ChartColor.plain)
+                }
+            }
+            Spacer(minLength: 0)
+            HStack(alignment: .bottom, spacing: 6) {
+                ForEach(Array(week.enumerated()), id: \.offset) { i, d in
+                    VStack(spacing: 4) {
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(d.1 == 0 ? Theme.line : (i == week.count - 1 ? Theme.accent : Theme.accent.opacity(0.55)))
+                            .frame(height: d.1 == 0 ? 3 : max(4, 44 * CGFloat(d.1) / CGFloat(peak)))
+                        Text(d.0.formatted(.dateTime.weekday(.narrow))).font(Theme.rounded(9, i == week.count - 1 ? .bold : .regular))
+                            .foregroundStyle(i == week.count - 1 ? Theme.text : Theme.faint)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .help("\(d.0.formatted(.dateTime.weekday(.wide).month().day())): \(Duration.short(d.1))")
+                }
+            }
+            .frame(height: 60, alignment: .bottom)
+        }
+        .padding(Space.xl)
+        .frame(maxHeight: .infinity, alignment: .topLeading)
+        .background(
+            RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
+                .fill(LinearGradient(colors: [Theme.cardHi, Theme.card], startPoint: .topLeading, endPoint: .bottomTrailing))
+        )
+        .overlay(RoundedRectangle(cornerRadius: Radius.card, style: .continuous).strokeBorder(Theme.accent.opacity(0.18)))
+    }
+
+    /// "1h55m" or "45m" for the pixel font.
+    private func pixelDuration(_ m: Int) -> String { m >= 60 ? "\(m / 60)h\(String(format: "%02d", m % 60))m" : "\(m)m" }
+
+    private func legend(_ label: String, _ color: Color) -> some View {
+        HStack(spacing: 6) {
+            RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 8, height: 8)
+            Text(label).font(TypeScale.meta).foregroundStyle(Theme.muted)
+        }
+    }
+
+    private var kpiGrid: some View {
         let total = tideTotal + plainTotal
         let prev = (data.tidePrevious ?? 0) + data.plainPrevious
-        let activeDays = Set(dayPoints.filter { $0.minutes > 0 }.map(\.date)).count
+        let active = dayTotals.filter { $0.1 > 0 }.count
         let sessions = (data.tide?.totals.sessions ?? 0) + data.plainSessions.count
-        let best = Dictionary(grouping: dayPoints, by: \.date).mapValues { $0.reduce(0) { $0 + $1.minutes } }.max { $0.value < $1.value }
-        return HStack(spacing: Space.l) {
-            Tile(title: "Total", value: Duration.short(total), detail: delta(total, prev))
-            Tile(title: "Tide study", value: Duration.short(tideTotal), detail: "Today \(Duration.short(data.tide?.totals.today ?? model.tide.todayMinutes))", dot: ChartColor.tide)
-            Tile(title: "Plain focus", value: Duration.short(plainTotal), detail: "Today \(Duration.short(model.stats.todayMinutes))", dot: ChartColor.plain)
-            Tile(title: "Per active day", value: Duration.short(activeDays > 0 ? total / activeDays : 0), detail: "\(activeDays) of \(data.days) days")
-            Tile(title: "Sessions", value: "\(sessions)", detail: sessions > 0 ? "Avg \(Duration.short(total / max(1, sessions)))" : "None yet")
-            Tile(title: "Streak", value: "\(max(data.tide?.totals.streak ?? 0, model.stats.streakDays))d",
-                 detail: best.map { "Best day \($0.key.formatted(.dateTime.month(.abbreviated).day())) · \(Duration.short($0.value))" } ?? "", icon: "flame.fill")
+        let best = dayTotals.max { $0.1 < $1.1 }
+        return Grid(horizontalSpacing: Space.l, verticalSpacing: Space.l) {
+            GridRow {
+                Tile(title: "Last \(data.days) days", value: Duration.short(total), detail: delta(total, prev))
+                Tile(title: "Per active day", value: Duration.short(active > 0 ? total / active : 0), detail: "\(active) of \(data.days) days active")
+            }
+            GridRow {
+                Tile(title: "Sessions", value: "\(sessions)", detail: sessions > 0 ? "\(Duration.short(total / max(1, sessions))) on average" : "None yet")
+                Tile(title: "Streak", value: "\(max(data.tide?.totals.streak ?? 0, model.stats.streakDays)) days",
+                     detail: best.map { $0.1 > 0 ? "Best: \($0.0.formatted(.dateTime.month(.abbreviated).day())), \(Duration.short($0.1))" : "No best day yet" } ?? "", icon: "flame.fill")
+            }
         }
     }
 
     private func delta(_ now: Int, _ before: Int) -> String {
-        guard before > 0 else { return "vs previous \(data.days) days: new" }
+        guard before > 0 else { return now > 0 ? "Nothing in the \(data.days) days before" : "Nothing yet" }
         let pct = Int((Double(now - before) / Double(before) * 100).rounded())
-        return "\(pct >= 0 ? "↑" : "↓") \(abs(pct))% vs previous \(data.days) days"
+        return "\(pct >= 0 ? "↑" : "↓") \(abs(pct))% on the \(data.days) days before"
     }
+
+    // MARK: Derived data
 
     private var dayPoints: [DayPoint] {
         let cal = Calendar.current
@@ -228,18 +410,43 @@ struct DashboardView: View {
         }
     }
 
+    /// Both apps per day, oldest first.
+    private var dayTotals: [(Date, Int)] {
+        Dictionary(grouping: dayPoints, by: \.date).map { ($0.key, $0.value.reduce(0) { $0 + $1.minutes }) }.sorted { $0.0 < $1.0 }
+    }
+
+    private var activeDaysText: String {
+        let active = dayTotals.filter { $0.1 > 0 }.count
+        return "\(active) of \(data.days) days with study or focus"
+    }
+
+    /// Minutes by weekday (Monday first) and hour, from when each session started.
+    private var weekHour: [[Int]] {
+        var cells = Array(repeating: Array(repeating: 0, count: 24), count: 7)
+        let cal = Calendar.current
+        func add(_ start: Date, _ minutes: Int) {
+            let wd = (cal.component(.weekday, from: start) + 5) % 7
+            cells[wd][cal.component(.hour, from: start)] += minutes
+        }
+        for s in data.tideSessions { add(s.start, s.minutes) }
+        for s in data.plainSessions { add(s.start, s.minutes) }
+        return cells
+    }
+
+    private var peakText: String {
+        let cells = weekHour
+        var best = (0, 0, 0)
+        for d in 0..<7 { for h in 0..<24 where cells[d][h] > best.2 { best = (d, h, cells[d][h]) } }
+        guard best.2 > 0 else { return "Weekday and hour sessions start" }
+        let day = ["Mondays", "Tuesdays", "Wednesdays", "Thursdays", "Fridays", "Saturdays", "Sundays"][best.0]
+        let hour = Calendar.current.date(bySettingHour: best.1, minute: 0, second: 0, of: Date())!.formatted(date: .omitted, time: .shortened)
+        return "Most often \(day) around \(hour)"
+    }
+
     private var plainHours: [Int] {
         var h = Array(repeating: 0, count: 24)
         for s in data.plainSessions { h[Calendar.current.component(.hour, from: s.start)] += s.minutes }
         return h
-    }
-
-    private var peakHourText: String {
-        let tide = data.tide?.hours ?? Array(repeating: 0, count: 24)
-        let both = zip(tide, plainHours).map { $0 + $1 }
-        guard let peak = both.indices.max(by: { both[$0] < both[$1] }), both[peak] > 0 else { return "Minutes started in each hour" }
-        let d = Calendar.current.date(bySettingHour: peak, minute: 0, second: 0, of: Date())!
-        return "Busiest around \(d.formatted(date: .omitted, time: .shortened))"
     }
 
     private var kindSubtitle: String {
@@ -280,18 +487,172 @@ struct DashboardView: View {
 // MARK: - Pieces
 
 private extension View {
-    /// A titled card on the dashboard.
+    /// A titled card on the dashboard; fills its row's height so pairs line up.
     func card(_ title: String, subtitle: String) -> some View {
-        VStack(alignment: .leading, spacing: Space.m) {
+        VStack(alignment: .leading, spacing: Space.l) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(TypeScale.heading).foregroundStyle(Theme.text)
                 Text(subtitle).font(TypeScale.meta).foregroundStyle(Theme.muted)
             }
             self
         }
-        .padding(Space.l)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .padding(Space.xl)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: Radius.card, style: .continuous).fill(Theme.card))
+    }
+}
+
+/// Sequential amber steps for heatmaps: one hue, dim to bright, empty cells in the line colour.
+enum Heat {
+    static func color(_ minutes: Int, peak: Int) -> Color {
+        guard minutes > 0, peak > 0 else { return Theme.line }
+        let f = Double(minutes) / Double(peak)
+        let step = f > 0.75 ? 1.0 : f > 0.5 ? 0.75 : f > 0.25 ? 0.5 : 0.3
+        return Theme.accent.opacity(step)
+    }
+
+    static func legend() -> some View {
+        HStack(spacing: 4) {
+            Text("Less").font(Theme.rounded(10)).foregroundStyle(Theme.faint)
+            ForEach([0.0, 0.3, 0.5, 0.75, 1.0], id: \.self) { o in
+                RoundedRectangle(cornerRadius: 2).fill(o == 0 ? Theme.line : Theme.accent.opacity(o)).frame(width: 10, height: 10)
+            }
+            Text("More").font(Theme.rounded(10)).foregroundStyle(Theme.faint)
+        }
+    }
+}
+
+/// The range as a pixel calendar: a column per week, Monday at the top.
+struct CalendarHeat: View {
+    let days: [(Date, Int)]
+    let start: Date
+
+    var body: some View {
+        let cal = Calendar.current
+        let lead = (cal.component(.weekday, from: start) + 5) % 7
+        let slots: [(Date, Int)?] = Array(repeating: nil, count: lead) + days.map { Optional($0) }
+        let weeks = stride(from: 0, to: slots.count, by: 7).map { Array(slots[$0..<min($0 + 7, slots.count)]) }
+        let peak = days.map(\.1).max() ?? 0
+        let cell: CGFloat = weeks.count > 30 ? 11 : weeks.count > 14 ? 14 : 30
+        VStack(alignment: .leading, spacing: Space.m) {
+            HStack(alignment: .top, spacing: Space.xl) {
+            HStack(alignment: .top, spacing: 3) {
+                VStack(spacing: 3) {
+                    ForEach(Array(["M", "", "W", "", "F", "", "S"].enumerated()), id: \.offset) { _, l in
+                        Text(l).font(Theme.rounded(9)).foregroundStyle(Theme.faint).frame(width: 12, height: cell)
+                    }
+                }
+                ForEach(Array(weeks.enumerated()), id: \.offset) { _, week in
+                    VStack(spacing: 3) {
+                        ForEach(0..<7, id: \.self) { i in
+                            if i < week.count, let d = week[i] {
+                                RoundedRectangle(cornerRadius: cell > 20 ? 4 : 2).fill(Heat.color(d.1, peak: peak)).frame(width: cell, height: cell)
+                                    .overlay {
+                                        if cell > 20 {
+                                            Text("\(cal.component(.day, from: d.0))").font(Theme.rounded(9, .semibold))
+                                                .foregroundStyle(d.1 == 0 ? Theme.faint : Double(d.1) / Double(max(1, peak)) > 0.5 ? Theme.bg : Theme.text)
+                                        }
+                                    }
+                                    .help("\(d.0.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day())): \(Duration.short(d.1))")
+                            } else {
+                                Color.clear.frame(width: cell, height: cell)
+                            }
+                        }
+                    }
+                }
+            }
+            weekdays
+            }
+            Spacer(minLength: 0)
+            Heat.legend()
+        }
+    }
+}
+
+extension CalendarHeat {
+    /// Total per weekday across the range, Monday first: which days carry the load.
+    var weekdays: some View {
+        let cal = Calendar.current
+        var totals = Array(repeating: 0, count: 7)
+        for d in days { totals[(cal.component(.weekday, from: d.0) + 5) % 7] += d.1 }
+        let peak = max(1, totals.max() ?? 1)
+        let names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        let best = totals.firstIndex(of: totals.max() ?? 0) ?? 0
+        return VStack(alignment: .leading, spacing: 6) {
+            Text("BY WEEKDAY").font(Theme.rounded(9, .bold)).foregroundStyle(Theme.faint).kerning(0.5)
+            ForEach(0..<7, id: \.self) { i in
+                HStack(spacing: Space.s) {
+                    Text(names[i]).font(Theme.rounded(11, i == best && totals[i] > 0 ? .bold : .regular))
+                        .foregroundStyle(i == best && totals[i] > 0 ? Theme.text : Theme.muted).frame(width: 30, alignment: .leading)
+                    GeometryReader { g in
+                        RoundedRectangle(cornerRadius: 2).fill(totals[i] == 0 ? Theme.line : Theme.accent.opacity(i == best ? 1 : 0.55))
+                            .frame(width: max(3, g.size.width * CGFloat(totals[i]) / CGFloat(peak)), height: 8).frame(maxHeight: .infinity)
+                    }
+                    .frame(height: 14)
+                    Text(Duration.short(totals[i])).font(Theme.rounded(10)).foregroundStyle(Theme.muted).monospacedDigit().frame(width: 48, alignment: .trailing)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
+/// Weekday by hour: when sessions start.
+struct WeekHourHeat: View {
+    let cells: [[Int]]
+
+    var body: some View {
+        let peak = cells.flatMap { $0 }.max() ?? 0
+        let days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        VStack(alignment: .leading, spacing: Space.m) {
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(0..<7, id: \.self) { d in
+                    HStack(spacing: 3) {
+                        Text(days[d]).font(Theme.rounded(9)).foregroundStyle(Theme.faint).frame(width: 26, alignment: .leading)
+                        ForEach(0..<24, id: \.self) { h in
+                            RoundedRectangle(cornerRadius: 2).fill(Heat.color(cells[d][h], peak: peak))
+                                .frame(maxWidth: .infinity).frame(height: 26)
+                                .help("\(days[d]) \(h):00 · \(Duration.short(cells[d][h]))")
+                        }
+                    }
+                }
+                HStack(spacing: 3) {
+                    Color.clear.frame(width: 26, height: 1)
+                    ForEach(0..<24, id: \.self) { h in
+                        Text(h % 6 == 0 ? (h == 0 ? "12a" : h == 12 ? "12p" : h < 12 ? "\(h)a" : "\(h - 12)p") : "")
+                            .font(Theme.rounded(9)).foregroundStyle(Theme.faint).fixedSize().frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+            Spacer(minLength: 0)
+            Heat.legend()
+        }
+    }
+}
+
+/// Apps in front this week, without a card of its own (the dashboard's card holds it).
+struct AppRows: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        let rows = Array(model.appTotals(week: true).prefix(8))
+        let peak = max(1, rows.first?.minutes ?? 1)
+        VStack(alignment: .leading, spacing: Space.s) {
+            if !model.settings.appTracking { Text("App time is off (Settings).").font(TypeScale.body).foregroundStyle(Theme.faint) }
+            else if rows.isEmpty { Text("Nothing yet this week.").font(TypeScale.body).foregroundStyle(Theme.faint) }
+            ForEach(rows) { r in
+                let tide = r.bundleID == AppWatcher.tideBundleID
+                HStack(spacing: Space.m) {
+                    Text(r.name).font(TypeScale.body).foregroundStyle(Theme.text).lineLimit(1).frame(width: 140, alignment: .leading)
+                    GeometryReader { g in
+                        RoundedRectangle(cornerRadius: 3).fill(tide ? ChartColor.tide : Theme.muted.opacity(0.6))
+                            .frame(width: max(4, g.size.width * CGFloat(r.minutes) / CGFloat(peak)), height: 10).frame(maxHeight: .infinity)
+                    }
+                    .frame(height: 16)
+                    Text(Duration.short(r.minutes)).font(TypeScale.meta).foregroundStyle(Theme.muted).monospacedDigit().frame(width: 56, alignment: .trailing)
+                }
+            }
+        }
     }
 }
 
@@ -315,7 +676,7 @@ struct Tile: View {
             Text(detail).font(TypeScale.meta).foregroundStyle(Theme.muted).lineLimit(1)
         }
         .padding(Space.l)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: Radius.card, style: .continuous).fill(Theme.card))
     }
 }
@@ -395,6 +756,8 @@ struct DayChart: View {
 struct HourChart: View {
     let tide: [Int]
     let plain: [Int]
+    /// Off when only one app is drawn (the card's title names it).
+    var legend = true
 
     var body: some View {
         Chart {
@@ -406,6 +769,7 @@ struct HourChart: View {
             }
         }
         .chartForegroundStyleScale(["Tide": ChartColor.tide, "Plain": ChartColor.plain])
+        .chartLegend(legend ? .visible : .hidden)
         .chartLegend(position: .top, alignment: .leading)
         .chartXScale(domain: -0.5...23.5)
         .chartXAxis {

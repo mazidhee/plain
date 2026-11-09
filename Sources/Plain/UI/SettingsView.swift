@@ -55,6 +55,10 @@ struct SettingsView: View {
                 HStack {
                     SecureField("Tide study data API token", text: $tokenBox.value, prompt: Text(model.tideToken == nil ? "Paste the token" : "Saved in the Keychain"))
                         .onSubmit { model.setTideToken(tokenBox.value); tokenBox.value = "" }
+                    Button("Paste") {
+                        if let t = NSPasteboard.general.string(forType: .string) { model.setTideToken(t) }
+                    }
+                    .help("Saves the token on the clipboard")
                     Button("Save") { model.setTideToken(tokenBox.value); tokenBox.value = "" }.disabled(tokenBox.value.isEmpty)
                     if model.tideToken != nil { Button("Forget") { model.setTideToken("") } }
                 }

@@ -105,7 +105,10 @@ enum Snapshot {
         let dash = DashboardData(model: model)
         dash.preview(tide: tide30, double: tide60, sessions: tideSessions)
         dash.sessionsOverride = sessions
-        render(DashboardView(model: model, data: dash).frame(width: 1180, height: 2050), to: dir.appendingPathComponent("dashboard.png"))
+        for (tab, h) in [(DashTab.overview, 1320), (.tide, 1400), (.plain, 1000), (.sessions, 1000)] {
+            dash.tab = tab
+            render(DashboardView(model: model, data: dash).frame(width: 1180, height: CGFloat(h)), to: dir.appendingPathComponent("dashboard-\(tab.rawValue.lowercased()).png"))
+        }
         model.previewTide(nil)
 
         // The real sky over a day in Lagos.

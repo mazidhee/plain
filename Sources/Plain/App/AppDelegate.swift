@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        NSApp.mainMenu = Self.makeMainMenu()
         Animator.shared.start()
         model.startTicking()
         model.refreshTasks()
@@ -198,6 +199,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         }
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    /// ⌘C, ⌘V, ⌘X, ⌘A and ⌘Z reach text fields through the Edit menu, so a menu-bar app still needs one
+    /// (it only shows while the dashboard puts Plain in the Dock). ⌘W and ⌘Q work the same way.
+    static func makeMainMenu() -> NSMenu {
+        let main = NSMenu()
+        func submenu(_ title: String, _ items: [NSMenuItem]) {
+            let holder = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            let menu = NSMenu(title: title)
+            items.forEach(menu.addItem)
+            holder.submenu = menu
+            main.addItem(holder)
+        }
+        func item(_ title: String, _ action: Selector, _ key: String, _ mods: NSEvent.ModifierFlags = .command) -> NSMenuItem {
+            let i = NSMenuItem(title: title, action: action, keyEquivalent: key)
+            i.keyEquivalentModifierMask = mods
+            return i
+        }
+        submenu("Plain", [item("Quit Plain", #selector(NSApplication.terminate(_:)), "q")])
+        submenu("Edit", [
+            item("Undo", Selector(("undo:")), "z"),
+            item("Redo", Selector(("redo:")), "z", [.command, .shift]),
+            .separator(),
+            item("Cut", #selector(NSText.cut(_:)), "x"),
+            item("Copy", #selector(NSText.copy(_:)), "c"),
+            item("Paste", #selector(NSText.paste(_:)), "v"),
+            item("Select All", #selector(NSText.selectAll(_:)), "a"),
+        ])
+        submenu("Window", [
+            item("Close", #selector(NSWindow.performClose(_:)), "w"),
+            item("Minimize", #selector(NSWindow.performMiniaturize(_:)), "m"),
+        ])
+        return main
     }
 
     /// The dashboard: a full window with a Dock icon while it's open; Plain goes back to being
